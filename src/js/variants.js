@@ -1,172 +1,82 @@
-export function classifyAndDiff(masterText, otherText) {
-  const a = String(masterText || "");
-  const b = String(otherText || "");
+export function tokenSimilarity(aTok, bTok) {
+  // 0..1
+  if (!aTok || !bTok) return 0;
 
-  const types = classify(a, b);
-  const html = diffHtml(a, b);
-  return { types, html };
+  const la = normLemma(aTok.lemma);
+  const lb = normLemma(bTok.lemma);
+  if (la && lb && la === lb) return 1.0;
+
+  const a = normPhonetic(aTok.form);
+  const b = normPhonetic(bTok.form);
+  return similarity(a, b);
 }
 
-// --- Типы разночтений (эвристики) ---
-function classify(a, b) {
-  const types = new Set();
-  if (!a && !b) return types;
-  if (a === b) return types;
+export function classifyPair(masterTok, otherTok) {
+  // Возвращает:
+  // { label: "Идентично|Пропуск|Графическое/Фон.|Морфологическое|Синтаксическое|Лексическое",
+  //   types: Set(["graphic","phonetic","morph","syntax","lexical"]) }
+  if (!otherTok) return { label: "Пропуск", types: new Set() };
 
-  const gA = normGraphic(a);
-  const gB = normGraphic(b);
+  const A = normGraphic(masterTok?.form);
+  const B = normGraphic(otherTok?.form);
 
-  // 1) графические: различается исходный, но совпадает после "граф-нормализации"
-  if (gA === gB) {
-    types.add("graphic");
-    return types;
+  if (A && B && A === B) return { label: "Идентично", types: new Set() };
+
+  const sim = similarity(normPhonetic(masterTok?.form), normPhonetic(otherTok?.form));
+  const la = normLemma(masterTok?.lemma);
+  const lb = normLemma(otherTok?.lemma);
+  const lemmaEq = la && lb && la === lb;
+
+  // “Графическое/Фон.” — если формы достаточно близки
+  if (sim >= 0.78) {
+    return { label: "Графическое/Фон.", types: new Set(["graphic", "phonetic"]) };
   }
 
-  const pA = normPhonetic(a);
-  const pB = normPhonetic(b);
-
-  // 2) фонетические: совпадает после "фон-нормализации"
-  if (pA === pB) {
-    types.add("phonetic");
-    return types;
+  // Если лемма совпадает, но формы не близки → “Морфологическое”
+  if (lemmaEq) {
+    return { label: "Морфологическое", types: new Set(["morph"]) };
   }
 
-  // 3) синтаксические: те же токены, но порядок другой
-  const tokA = tokens(pA);
-  const tokB = tokens(pB);
-  if (tokA.length && tokB.length) {
-    const sortedA = [...tokA].sort().join(" ");
-    const sortedB = [...tokB].sort().join(" ");
-    if (sortedA === sortedB && tokA.join(" ") !== tokB.join(" ")) {
-      types.add("syntax");
-      return types;
-    }
-  }
-
-  // 4) морфологические: очень похожие слова (малое расстояние), но не совпали полностью
-  if (tokA.length && tokB.length && tokA.length === tokB.length) {
-    let close = 0;
-    for (let i = 0; i < tokA.length; i++) {
-      const s = similarity(tokA[i], tokB[i]);
-      if (s > 0.72) close++;
-    }
-    if (close / tokA.length > 0.6) {
-      types.add("morph");
-      return types;
-    }
-  }
-
-  // 5) иначе лексические
-  types.add("lexical");
-  return types;
-}
-
-function tokens(s) {
-  return String(s || "")
-    .toLowerCase()
-    .replace(/[^а-яёѣіѳѵꙗꙋ0-9\s\-]/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .split(" ")
-    .filter(Boolean);
+  // “Синтаксическое” на уровне одного слова почти не детектируется,
+  // оставим тип как резерв, но здесь не используем.
+  return { label: "Лексическое", types: new Set(["lexical"]) };
 }
 
 function normGraphic(s) {
-  // убираем “графические” вариации
   return String(s || "")
     .toLowerCase()
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")      // диакритика
+    .replace(/[\u0300-\u036f]/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
 
+function normLemma(s) {
+  return normGraphic(s);
+}
+
 function normPhonetic(s) {
-  // грубая нормализация исторической графики
   let t = normGraphic(s);
 
+  // приведение частых графем (упрощённо, чтобы попадать в “Графическое/Фон.”)
   const map = [
-    [/ѣ/g, "е"],
-    [/і/g, "и"],
-    [/ѳ/g, "ф"],
-    [/ѵ/g, "и"],
-    [/ꙗ/g, "я"],
-    [/ꙋ/g, "у"],
-    [/ѫ/g, "у"],
-    [/ѧ/g, "я"],
-    [/ѯ/g, "кс"],
-    [/ѱ/g, "пс"],
+    [/ѣ/g, "е"], [/і/g, "и"], [/ѳ/g, "ф"], [/ѵ/g, "и"],
+    [/ꙗ/g, "я"], [/ꙋ/g, "у"], [/ѫ/g, "у"], [/ѧ/g, "я"],
+    [/ѯ/g, "кс"], [/ѱ/g, "пс"],
+    [/ѡ/g, "о"],
   ];
   for (const [re, rep] of map) t = t.replace(re, rep);
 
-  // редуцированные в конце слов (очень грубо)
-  t = t.replace(/ъ\b/g, "");
-  t = t.replace(/ь\b/g, "");
-
-  t = t.replace(/\s+/g, " ").trim();
-  return t;
-}
-
-// --- Подсветка различий (упрощённый diff) ---
-function diffHtml(a, b) {
-  // если один пустой
-  if (!a && b) return `<span class="diffIns">${escapeHtml(b)}</span>`;
-  if (a && !b) return `<span class="diffDel">${escapeHtml(a)}</span>`;
-  if (a === b) return escapeHtml(a);
-
-  // слово-уровень diff: LCS по токенам
-  const A = a.split(/\s+/);
-  const B = b.split(/\s+/);
-
-  const lcs = lcsTable(A, B);
-  const out = [];
-
-  let i = A.length, j = B.length;
-  while (i > 0 && j > 0) {
-    if (A[i - 1] === B[j - 1]) {
-      out.push(escapeHtml(A[i - 1]));
-      i--; j--;
-    } else if (lcs[i - 1][j] >= lcs[i][j - 1]) {
-      out.push(`<span class="diffDel">${escapeHtml(A[i - 1])}</span>`);
-      i--;
-    } else {
-      out.push(`<span class="diffIns">${escapeHtml(B[j - 1])}</span>`);
-      j--;
-    }
-  }
-  while (i > 0) { out.push(`<span class="diffDel">${escapeHtml(A[i - 1])}</span>`); i--; }
-  while (j > 0) { out.push(`<span class="diffIns">${escapeHtml(B[j - 1])}</span>`); j--; }
-
-  out.reverse();
-  return out.join(" ");
-}
-
-function lcsTable(A, B) {
-  const n = A.length, m = B.length;
-  const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
-  for (let i = 1; i <= n; i++) {
-    for (let j = 1; j <= m; j++) {
-      dp[i][j] = (A[i - 1] === B[j - 1])
-        ? dp[i - 1][j - 1] + 1
-        : Math.max(dp[i - 1][j], dp[i][j - 1]);
-    }
-  }
-  return dp;
-}
-
-function escapeHtml(s) {
-  return String(s ?? "")
-    .replaceAll("&","&amp;")
-    .replaceAll("<","&lt;")
-    .replaceAll(">","&gt;")
-    .replaceAll('"',"&quot;");
+  // убираем финальные редуцированные (грубая нормализация)
+  t = t.replace(/ъ\b/g, "").replace(/ь\b/g, "");
+  return t.replace(/\s+/g, " ").trim();
 }
 
 function similarity(a, b) {
   if (!a && !b) return 1;
   if (!a || !b) return 0;
-  const aa = a.slice(0, 60);
-  const bb = b.slice(0, 60);
+  const aa = a.slice(0, 80);
+  const bb = b.slice(0, 80);
   const d = levenshtein(aa, bb);
   const maxLen = Math.max(aa.length, bb.length);
   return maxLen === 0 ? 1 : (1 - d / maxLen);
@@ -179,7 +89,6 @@ function levenshtein(a, b) {
 
   const prev = new Uint16Array(m + 1);
   const curr = new Uint16Array(m + 1);
-
   for (let j = 0; j <= m; j++) prev[j] = j;
 
   for (let i = 1; i <= n; i++) {
@@ -187,13 +96,17 @@ function levenshtein(a, b) {
     const ai = a.charCodeAt(i - 1);
     for (let j = 1; j <= m; j++) {
       const cost = ai === b.charCodeAt(j - 1) ? 0 : 1;
-      curr[j] = Math.min(
-        prev[j] + 1,
-        curr[j - 1] + 1,
-        prev[j - 1] + cost
-      );
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
     }
     prev.set(curr);
   }
   return prev[m];
+}
+
+export function escapeHtml(s) {
+  return String(s ?? "")
+    .replaceAll("&","&amp;")
+    .replaceAll("<","&lt;")
+    .replaceAll(">","&gt;")
+    .replaceAll('"',"&quot;");
 }

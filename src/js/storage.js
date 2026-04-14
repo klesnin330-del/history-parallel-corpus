@@ -19,11 +19,8 @@ export function loadJSONFile(file) {
   return new Promise((resolve, reject) => {
     const fr = new FileReader();
     fr.onload = () => {
-      try {
-        resolve(JSON.parse(fr.result));
-      } catch (e) {
-        reject(e);
-      }
+      try { resolve(JSON.parse(fr.result)); }
+      catch (e) { reject(e); }
     };
     fr.onerror = reject;
     fr.readAsText(file);

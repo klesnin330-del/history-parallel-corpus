@@ -1,20 +1,18 @@
-import { parseTEIToSegments } from "./tei.js";
-import { alignWitnessToMaster } from "./align.js";
-import { classifyAndDiff } from "./variants.js";
-import { exportParallelTEI } from "./export_tei.js";
+import { parseTEIToWords } from "./tei.js";
+import { alignWordsToMaster, shiftMapping } from "./align.js";
+import { classifyPair, escapeHtml } from "./variants.js";
+import { exportParallelTEIWords } from "./export_tei.js";
+import { buildComparisonCSV } from "./export_csv.js";
 import { downloadTextFile, downloadJSON, loadJSONFile } from "./storage.js";
 
 const state = {
-  witnesses: [],       // { id, name, fileName, teiText, segmentsAll, range:{from,to}, visible, isMaster }
+  witnesses: [],   // {id,name,fileName,teiText,wordsAll,range:{from,to},visible}
   masterId: null,
-  // alignment[witnessId] = array length masterSegments.length with indices into that witness segmentsFiltered (or null)
-  alignment: {},
-  // cache filtered segments for each witness
-  filtered: {},        // witnessId -> segments in range
-  order: [],           // ordered witness ids (visible order)
+  order: [],
+  filtered: {},    // witnessId -> words[]
+  mapping: {},     // witnessId -> mapping array (len=masterWords)
   variantFilters: new Set(["graphic","phonetic","morph","syntax","lexical"]),
   variantMode: "any",
-  search: ""
 };
 
 const elFileInput = document.getElementById("fileInput");
@@ -24,9 +22,10 @@ const elBtnClear = document.getElementById("btnClear");
 const elBtnSaveProject = document.getElementById("btnSaveProject");
 const elProjectInput = document.getElementById("projectInput");
 const elBtnExportTEI = document.getElementById("btnExportTEI");
+const elCsvWitnessSelect = document.getElementById("csvWitnessSelect");
+const elBtnExportCSV = document.getElementById("btnExportCSV");
 const elStatus = document.getElementById("status");
 const elTableWrap = document.getElementById("tableWrap");
-const elSearchBox = document.getElementById("searchBox");
 const elVariantMode = document.getElementById("variantMode");
 const elTypeFilters = Array.from(document.querySelectorAll(".typeFilter"));
 
@@ -35,76 +34,96 @@ const helpModal = document.getElementById("helpModal");
 const helpCloseBackdrop = document.getElementById("helpCloseBackdrop");
 const helpCloseX = document.getElementById("helpCloseX");
 
-function setStatus(text) {
-  elStatus.textContent = text;
-}
+function setStatus(t){ elStatus.textContent = t; }
+function uid(){ return Math.random().toString(16).slice(2) + Date.now().toString(16); }
+function getWitness(id){ return state.witnesses.find(w => w.id === id); }
+function masterWitness(){ return getWitness(state.masterId); }
 
-function uid() {
-  return Math.random().toString(16).slice(2) + Date.now().toString(16);
-}
-
-function getWitness(id) {
-  return state.witnesses.find(w => w.id === id);
-}
-
-function masterWitness() {
-  return getWitness(state.masterId);
-}
-
-function pbToNum(pb) {
-  // пытаемся вытащить число из pb (например "117", "117r", "117–119" и т.п.)
-  const m = String(pb ?? "").match(/(\d+)/);
+function toNum(s) {
+  const m = String(s ?? "").match(/(\d+)/);
   return m ? parseInt(m[1], 10) : null;
 }
 
-function filterSegmentsByRange(segments, range) {
-  const fromN = pbToNum(range.from);
-  const toN = pbToNum(range.to);
-  if (!fromN || !toN) return segments;
+function filterWordsBySheets(words, range) {
+  const fromN = toNum(range?.from);
+  const toN = toNum(range?.to);
+  if (!fromN || !toN) return words;
 
   const lo = Math.min(fromN, toN);
   const hi = Math.max(fromN, toN);
 
-  return segments.filter(s => {
-    const n = pbToNum(s.pb);
-    if (!n) return true; // если pb не распознался — не режем
-    return n >= lo && n <= hi;
+  return words.filter(w => {
+    const sh = w.sheet;
+    if (sh === null || sh === undefined) return true;
+    return sh >= lo && sh <= hi;
   });
 }
 
-function recomputeFiltered() {
+function recomputeFiltered(){
   state.filtered = {};
   for (const w of state.witnesses) {
-    state.filtered[w.id] = filterSegmentsByRange(w.segmentsAll, w.range || {from:"",to:""});
+    state.filtered[w.id] = filterWordsBySheets(w.wordsAll, w.range || {from:"",to:""});
   }
 }
 
-function ensureOrder() {
+function ensureOrder(){
   const ids = state.witnesses.map(w => w.id);
   if (!state.order.length) state.order = [...ids];
-  // добавить отсутствующие
   for (const id of ids) if (!state.order.includes(id)) state.order.push(id);
-  // убрать лишние
   state.order = state.order.filter(id => ids.includes(id));
 }
 
-function canAlign() {
+function visibleWitnessesOrdered(){
+  return state.order.map(id => getWitness(id)).filter(Boolean).filter(w => w.visible);
+}
+
+function canAlign(){
   return state.witnesses.length >= 2 && !!state.masterId;
 }
 
-function updateButtons() {
-  const ok = canAlign();
-  elBtnAlign.disabled = !ok;
+function updateButtons(){
+  elBtnAlign.disabled = !canAlign();
   elBtnClear.disabled = state.witnesses.length === 0;
   elBtnSaveProject.disabled = state.witnesses.length === 0;
-  elBtnExportTEI.disabled = Object.keys(state.alignment).length === 0;
+  elBtnExportTEI.disabled = Object.keys(state.mapping).length === 0;
+  elBtnExportCSV.disabled = Object.keys(state.mapping).length === 0 && state.witnesses.length < 2;
 }
 
-function renderWitnessList() {
+function renderCsvSelect(){
+  const master = masterWitness();
+  elCsvWitnessSelect.innerHTML = "";
+
+  const opts = [];
+  for (const w of state.witnesses) {
+    if (!master || w.id === master.id) continue;
+    opts.push(w);
+  }
+
+  if (opts.length === 0) {
+    const o = document.createElement("option");
+    o.value = "";
+    o.textContent = "Нет списков для сравнения";
+    elCsvWitnessSelect.appendChild(o);
+    elBtnExportCSV.disabled = true;
+    return;
+  }
+
+  for (const w of opts) {
+    const o = document.createElement("option");
+    o.value = w.id;
+    o.textContent = w.fileName || w.name;
+    elCsvWitnessSelect.appendChild(o);
+  }
+
+  elBtnExportCSV.disabled = Object.keys(state.mapping).length === 0;
+}
+
+function renderWitnessList(){
   ensureOrder();
+  recomputeFiltered();
   elWitnessList.innerHTML = "";
 
-  for (const id of state.order) {
+  for (const id of state.order){
     const w = getWitness(id);
     if (!w) continue;
 
@@ -119,7 +138,6 @@ function renderWitnessList() {
     const meta = document.createElement("div");
     meta.className = "witness__meta";
 
-    // visible checkbox
     const vis = document.createElement("label");
     vis.className = "label";
     vis.innerHTML = `<input type="checkbox" ${w.visible ? "checked":""}/> Показ`;
@@ -129,21 +147,20 @@ function renderWitnessList() {
     });
     meta.appendChild(vis);
 
-    // master radio
     const master = document.createElement("label");
     master.className = "label";
     master.innerHTML = `<input type="radio" name="masterRadio" ${w.id===state.masterId?"checked":""}/> Master`;
     master.querySelector("input").addEventListener("change", () => {
       state.masterId = w.id;
-      // пересоберём alignment? пока нет — пользователь нажмёт align
+      state.mapping = {}; // сбросить выравнивание
+      setStatus(`Master выбран: ${w.name}. Пожалуйста, нажмите «Автовыравнивание».`);
       renderWitnessList();
-      setStatus(`Master: ${w.name}. Нажми «Автовыравнивание».`);
-      updateButtons();
+      renderCsvSelect();
       renderTable();
+      updateButtons();
     });
     meta.appendChild(master);
 
-    // range inputs
     const from = document.createElement("input");
     from.className = "smallInput";
     from.placeholder = "лист от";
@@ -151,9 +168,12 @@ function renderWitnessList() {
     from.addEventListener("change", () => {
       w.range = w.range || {from:"",to:""};
       w.range.from = from.value.trim();
-      recomputeFiltered();
-      setStatus("Диапазоны обновлены. Нажми «Автовыравнивание», чтобы пересчитать.");
+      state.mapping = {};
+      renderWitnessList();
+      renderCsvSelect();
       renderTable();
+      updateButtons();
+      setStatus("Диапазоны листов обновлены. Пожалуйста, выполните выравнивание повторно.");
     });
 
     const to = document.createElement("input");
@@ -163,114 +183,97 @@ function renderWitnessList() {
     to.addEventListener("change", () => {
       w.range = w.range || {from:"",to:""};
       w.range.to = to.value.trim();
-      recomputeFiltered();
-      setStatus("Диапазоны обновлены. Нажми «Автовыравнивание», чтобы пересчитать.");
+      state.mapping = {};
+      renderWitnessList();
+      renderCsvSelect();
       renderTable();
+      updateButtons();
+      setStatus("Диапазоны листов обновлены. Пожалуйста, выполните выравнивание повторно.");
     });
 
     meta.appendChild(document.createTextNode("Листы: "));
     meta.appendChild(from);
     meta.appendChild(to);
 
-    // order buttons
     const orderBtns = document.createElement("div");
     orderBtns.className = "orderBtns";
-    const up = document.createElement("button");
-    up.textContent = "↑";
-    const down = document.createElement("button");
-    down.textContent = "↓";
+    const up = document.createElement("button"); up.textContent = "↑";
+    const down = document.createElement("button"); down.textContent = "↓";
     up.addEventListener("click", () => {
       const i = state.order.indexOf(w.id);
       if (i > 0) {
         [state.order[i-1], state.order[i]] = [state.order[i], state.order[i-1]];
-        renderWitnessList();
-        renderTable();
+        renderWitnessList(); renderTable();
       }
     });
     down.addEventListener("click", () => {
       const i = state.order.indexOf(w.id);
-      if (i >= 0 && i < state.order.length-1) {
+      if (i >= 0 && i < state.order.length - 1) {
         [state.order[i+1], state.order[i]] = [state.order[i], state.order[i+1]];
-        renderWitnessList();
-        renderTable();
+        renderWitnessList(); renderTable();
       }
     });
-    orderBtns.appendChild(up);
-    orderBtns.appendChild(down);
+    orderBtns.appendChild(up); orderBtns.appendChild(down);
     meta.appendChild(orderBtns);
 
     div.appendChild(meta);
 
+    const cntAll = w.wordsAll.length;
+    const cntF = state.filtered[w.id]?.length ?? 0;
     const tag = document.createElement("div");
     tag.className = "tag";
-    tag.textContent = `Сегментов всего: ${w.segmentsAll.length}, в диапазоне: ${state.filtered[w.id]?.length ?? 0}`;
+    tag.textContent = `Слов всего: ${cntAll}, в диапазоне: ${cntF}`;
     div.appendChild(tag);
 
     elWitnessList.appendChild(div);
   }
 }
 
-function getVisibleWitnessesOrdered() {
-  return state.order
-    .map(id => getWitness(id))
-    .filter(Boolean)
-    .filter(w => w.visible);
-}
-
-function rowPassesVariantFilter(rowTypes) {
+function rowPassesVariantFilter(rowTypes){
   if (state.variantMode === "off") return true;
-
-  const selected = state.variantFilters;
-  const types = rowTypes; // Set
-  if (types.size === 0) return false;
-
-  if (state.variantMode === "any") {
-    for (const t of types) if (selected.has(t)) return true;
-    return false;
-  }
-
-  // all: все найденные типы должны входить в выбранные
-  for (const t of types) if (!selected.has(t)) return false;
-  return true;
+  if (!rowTypes || rowTypes.size === 0) return false;
+  for (const t of rowTypes) if (state.variantFilters.has(t)) return true;
+  return false;
 }
 
-function renderTable() {
+function renderTable(){
   const master = masterWitness();
-  if (!master) {
-    elTableWrap.innerHTML = `<div style="padding:12px;color:#666;">Выбери Master.</div>`;
+  if (!master){
+    elTableWrap.innerHTML = `<div style="padding:12px;color:#666;">Пожалуйста, выберите Master.</div>`;
     return;
   }
 
-  const visibles = getVisibleWitnessesOrdered();
-  if (visibles.length === 0) {
-    elTableWrap.innerHTML = `<div style="padding:12px;color:#666;">Выбери, какие списки показывать (галочка «Показ»).</div>`;
+  recomputeFiltered();
+  const mWords = state.filtered[master.id] || [];
+  const visibles = visibleWitnessesOrdered();
+
+  if (mWords.length === 0){
+    elTableWrap.innerHTML = `<div style="padding:12px;color:#666;">У Master нет слов в указанном диапазоне листов.</div>`;
     return;
   }
 
-  const mSeg = state.filtered[master.id] || [];
-  const hasAlignment = Object.keys(state.alignment).length > 0;
-
-  // поиск по master
-  let rows = mSeg.map((seg, i) => ({ seg, i }));
-  const q = state.search.trim().toLowerCase();
-  if (q) {
-    rows = rows.filter(r => (r.seg.text || "").toLowerCase().includes(q));
+  if (visibles.length === 0){
+    elTableWrap.innerHTML = `<div style="padding:12px;color:#666;">Пожалуйста, включите отображение хотя бы одного списка.</div>`;
+    return;
   }
+
+  const hasMapping = Object.keys(state.mapping).length > 0;
 
   const table = document.createElement("table");
   table.className = "table";
 
-  // header
   const thead = document.createElement("thead");
   const trh = document.createElement("tr");
 
-  const th0 = document.createElement("th");
-  th0.textContent = "№ / лист";
-  trh.appendChild(th0);
+  const th0 = document.createElement("th"); th0.textContent = "№ / лист";
+  const th1 = document.createElement("th"); th1.textContent = "ЭТАЛОН";
+  const th2 = document.createElement("th"); th2.textContent = "Лемма";
+  trh.appendChild(th0); trh.appendChild(th1); trh.appendChild(th2);
 
-  for (const w of visibles) {
+  for (const w of visibles){
+    if (w.id === master.id) continue;
     const th = document.createElement("th");
-    th.innerHTML = `<div>${w.name}</div><div class="tag">${w.id===state.masterId?"MASTER":""}</div>`;
+    th.innerHTML = `<div>${escapeHtml(w.name)}</div><div class="tag">${escapeHtml(w.fileName || "")}</div>`;
     trh.appendChild(th);
   }
 
@@ -279,153 +282,136 @@ function renderTable() {
 
   const tbody = document.createElement("tbody");
 
-  for (const r of rows) {
-    const i = r.i;
+  for (let i = 0; i < mWords.length; i++){
+    const mTok = mWords[i];
     const tr = document.createElement("tr");
 
     const td0 = document.createElement("td");
-    td0.innerHTML = `<div><b>${i+1}</b></div><div class="tag">лист: ${r.seg.pb ?? "?"}</div>`;
+    td0.innerHTML = `<div><b>${i+1}</b></div><div class="tag">лист: ${escapeHtml(String(mTok.sheet ?? "?"))}</div>`;
     tr.appendChild(td0);
 
-    // compute row types for filtering
+    const tdM = document.createElement("td");
+    tdM.innerHTML = `<div class="cellText">${escapeHtml(mTok.form || "")}</div>`;
+    tr.appendChild(tdM);
+
+    const tdL = document.createElement("td");
+    tdL.innerHTML = `<div class="cellText">${escapeHtml(mTok.lemma || "")}</div>`;
+    tr.appendChild(tdL);
+
     let rowTypes = new Set();
 
-    for (const w of visibles) {
+    for (const w of visibles){
+      if (w.id === master.id) continue;
+
       const td = document.createElement("td");
+      const wWords = state.filtered[w.id] || [];
 
-      let txt = "";
-      let types = new Set();
-      let diffHtml = "";
+      let j = null;
+      if (hasMapping && state.mapping[w.id]) j = state.mapping[w.id][i];
 
-      if (w.id === master.id) {
-        txt = r.seg.text;
-        diffHtml = escapeHtml(txt);
-      } else if (hasAlignment && state.alignment[w.id]) {
-        const idx = state.alignment[w.id][i];
-        const wSegs = state.filtered[w.id] || [];
-        const other = (idx === null || idx === undefined) ? null : wSegs[idx];
-        txt = other ? other.text : "";
-        const res = classifyAndDiff(r.seg.text, txt);
-        types = res.types;
-        diffHtml = res.html;
-        for (const t of types) rowTypes.add(t);
-      } else {
-        // пока без alignment: пробуем индексно (черновик)
-        const wSegs = state.filtered[w.id] || [];
-        const other = wSegs[i];
-        txt = other ? other.text : "";
-        const res = classifyAndDiff(r.seg.text, txt);
-        types = res.types;
-        diffHtml = res.html;
-        for (const t of types) rowTypes.add(t);
-      }
+      const wTok = (j === null || j === undefined) ? null : wWords[j];
+      const cls = classifyPair(mTok, wTok);
+      for (const t of cls.types) rowTypes.add(t);
 
-      td.innerHTML = `<div class="cellText">${diffHtml}</div>`;
+      const wordText = wTok ? wTok.form : "---";
+      td.innerHTML = `<div class="cellText">${escapeHtml(wordText)}</div>`;
 
-      if (w.id !== master.id) {
-        const tools = document.createElement("div");
-        tools.className = "cellTools";
+      const tools = document.createElement("div");
+      tools.className = "cellTools";
 
-        const up = document.createElement("button");
-        up.className = "shiftBtn";
-        up.textContent = "▲";
+      const left = document.createElement("button");
+      left.className = "shiftBtn";
+      left.textContent = "◀";
+      left.title = "Сдвинуть соответствие на 1 слово назад";
 
-        const down = document.createElement("button");
-        down.className = "shiftBtn";
-        down.textContent = "▼";
+      const right = document.createElement("button");
+      right.className = "shiftBtn";
+      right.textContent = "▶";
+      right.title = "Сдвинуть соответствие на 1 слово вперёд";
 
-        up.addEventListener("click", () => shiftAlignment(w.id, i, -1));
-        down.addEventListener("click", () => shiftAlignment(w.id, i, +1));
+      left.addEventListener("click", () => {
+        if (!state.mapping[w.id]) state.mapping[w.id] = Array(mWords.length).fill(null);
+        shiftMapping(state.mapping[w.id], i, -1, wWords.length);
+        renderTable();
+      });
+      right.addEventListener("click", () => {
+        if (!state.mapping[w.id]) state.mapping[w.id] = Array(mWords.length).fill(null);
+        shiftMapping(state.mapping[w.id], i, +1, wWords.length);
+        renderTable();
+      });
 
-        tools.appendChild(up);
-        tools.appendChild(down);
+      const badges = document.createElement("div");
+      badges.className = "badgeRow";
+      const b = document.createElement("span");
+      b.className = "badge";
+      b.textContent = cls.label;
+      badges.appendChild(b);
 
-        const badges = document.createElement("div");
-        badges.className = "badgeRow";
-        for (const t of types) {
-          const b = document.createElement("span");
-          b.className = "badge";
-          b.textContent = t;
-          badges.appendChild(b);
-        }
+      tools.appendChild(left);
+      tools.appendChild(right);
 
-        td.appendChild(tools);
-        td.appendChild(badges);
-      }
-
+      td.appendChild(tools);
+      td.appendChild(badges);
       tr.appendChild(td);
     }
 
-    // фильтрация по типам разночтений
-    if (rowPassesVariantFilter(rowTypes)) {
-      tbody.appendChild(tr);
-    }
+    if (rowPassesVariantFilter(rowTypes)) tbody.appendChild(tr);
   }
 
   table.appendChild(tbody);
-
   elTableWrap.innerHTML = "";
   elTableWrap.appendChild(table);
 }
 
-function shiftAlignment(witnessId, masterRowIndex, delta) {
-  if (!state.alignment[witnessId]) return;
-  const w = getWitness(witnessId);
-  const wSegs = state.filtered[witnessId] || [];
-  const curr = state.alignment[witnessId][masterRowIndex];
-
-  let next = (curr === null || curr === undefined) ? null : curr + delta;
-  if (next !== null) {
-    if (next < 0) next = 0;
-    if (next >= wSegs.length) next = wSegs.length - 1;
-  }
-
-  state.alignment[witnessId][masterRowIndex] = next;
-  renderTable();
+function escapeHtml(s){ return escapeHtml0(s); }
+function escapeHtml0(s){
+  return String(s ?? "")
+    .replaceAll("&","&amp;")
+    .replaceAll("<","&lt;")
+    .replaceAll(">","&gt;")
+    .replaceAll('"',"&quot;");
 }
 
-async function doAlign() {
+async function doAlign(){
   const master = masterWitness();
   if (!master) return;
 
   recomputeFiltered();
-  const mSeg = state.filtered[master.id] || [];
-  if (mSeg.length === 0) {
-    setStatus("У Master нет сегментов в заданном диапазоне листов.");
+  const mWords = state.filtered[master.id] || [];
+  if (mWords.length === 0) {
+    setStatus("У Master нет слов в заданном диапазоне листов.");
     return;
   }
 
-  setStatus("Автовыравнивание… (может занять время)");
-  state.alignment = {};
+  setStatus("Автовыравнивание…");
+  state.mapping = {};
 
-  for (const w of state.witnesses) {
+  for (const w of state.witnesses){
     if (w.id === master.id) continue;
-
-    const wSeg = state.filtered[w.id] || [];
-    const mapping = await alignWitnessToMaster(mSeg, wSeg);
-    state.alignment[w.id] = mapping;
+    const wWords = state.filtered[w.id] || [];
+    state.mapping[w.id] = alignWordsToMaster(mWords, wWords);
   }
 
-  setStatus("Готово: выравнивание построено. Можно править ▲/▼ и фильтровать разночтения.");
+  setStatus("Готово: выравнивание построено. При необходимости используйте ◀/▶ для ручной правки.");
+  renderCsvSelect();
   updateButtons();
   renderTable();
 }
 
-function clearAll() {
+function clearAll(){
   state.witnesses = [];
   state.masterId = null;
-  state.alignment = {};
-  state.filtered = {};
   state.order = [];
-  state.search = "";
-  elSearchBox.value = "";
+  state.filtered = {};
+  state.mapping = {};
   setStatus("Сброшено.");
+  elCsvWitnessSelect.innerHTML = "";
   renderWitnessList();
   renderTable();
   updateButtons();
 }
 
-function readFileAsText(file) {
+function readFileAsText(file){
   return new Promise((resolve, reject) => {
     const fr = new FileReader();
     fr.onload = () => resolve(fr.result);
@@ -434,109 +420,93 @@ function readFileAsText(file) {
   });
 }
 
-async function handleFiles(files) {
+async function handleFiles(files){
   setStatus("Чтение файлов…");
-  for (const f of files) {
-    const text = await readFileAsText(f);
-    const parsed = parseTEIToSegments(text);
 
-    const w = {
+  for (const f of files){
+    const text = await readFileAsText(f);
+    const parsed = parseTEIToWords(text);
+
+    state.witnesses.push({
       id: uid(),
       name: parsed.title || f.name,
       fileName: f.name,
       teiText: text,
-      segmentsAll: parsed.segments,
-      range: { from: "", to: "" },
-      visible: true,
-      isMaster: false
-    };
-
-    state.witnesses.push(w);
+      wordsAll: parsed.words,
+      range: { from:"", to:"" },
+      visible: true
+    });
   }
 
-  // master по умолчанию — первый
-  if (!state.masterId && state.witnesses.length) {
-    state.masterId = state.witnesses[0].id;
-  }
+  if (!state.masterId && state.witnesses.length) state.masterId = state.witnesses[0].id;
 
-  recomputeFiltered();
   ensureOrder();
+  recomputeFiltered();
   renderWitnessList();
+  renderCsvSelect();
   renderTable();
   updateButtons();
 
-  setStatus("Файлы загружены. Выбери Master и диапазоны листов, затем нажми «Автовыравнивание».");
+  setStatus("Файлы загружены. Пожалуйста, выберите Master и диапазоны листов, затем нажмите «Автовыравнивание».");
 }
 
-function collectProject() {
+function collectProject(){
   return {
-    version: 1,
+    version: 3,
     createdAt: new Date().toISOString(),
     witnesses: state.witnesses.map(w => ({
       id: w.id,
       name: w.name,
       fileName: w.fileName,
-      teiText: w.teiText,         // чтобы можно было продолжить без повторной загрузки
+      teiText: w.teiText,
       range: w.range,
       visible: w.visible
     })),
     masterId: state.masterId,
     order: state.order,
-    alignment: state.alignment,
+    mapping: state.mapping,
     variantFilters: Array.from(state.variantFilters),
-    variantMode: state.variantMode,
-    search: state.search
+    variantMode: state.variantMode
   };
 }
 
-async function loadProject(obj) {
+async function loadProject(obj){
   clearAll();
   setStatus("Загрузка проекта…");
 
-  // восстановим witnesses и распарсим TEI
-  for (const w0 of obj.witnesses) {
-    const parsed = parseTEIToSegments(w0.teiText);
+  for (const w0 of obj.witnesses){
+    const parsed = parseTEIToWords(w0.teiText);
     state.witnesses.push({
       id: w0.id,
       name: w0.name || parsed.title || w0.fileName,
       fileName: w0.fileName,
       teiText: w0.teiText,
-      segmentsAll: parsed.segments,
+      wordsAll: parsed.words,
       range: w0.range || {from:"",to:""},
-      visible: (w0.visible !== false),
-      isMaster: false
+      visible: (w0.visible !== false)
     });
   }
 
   state.masterId = obj.masterId || (state.witnesses[0]?.id ?? null);
   state.order = obj.order || [];
-  state.alignment = obj.alignment || {};
+  state.mapping = obj.mapping || {};
   state.variantFilters = new Set(obj.variantFilters || ["graphic","phonetic","morph","syntax","lexical"]);
   state.variantMode = obj.variantMode || "any";
-  state.search = obj.search || "";
-  elSearchBox.value = state.search;
 
   elVariantMode.value = state.variantMode;
   for (const cb of elTypeFilters) cb.checked = state.variantFilters.has(cb.value);
 
-  recomputeFiltered();
   ensureOrder();
+  recomputeFiltered();
   renderWitnessList();
+  renderCsvSelect();
   renderTable();
   updateButtons();
 
-  setStatus("Проект загружен.");
+  setStatus("Проект загружен. При необходимости нажмите «Автовыравнивание» для пересчёта.");
 }
 
-function escapeHtml(s) {
-  return String(s ?? "")
-    .replaceAll("&","&amp;")
-    .replaceAll("<","&lt;")
-    .replaceAll(">","&gt;")
-    .replaceAll('"',"&quot;");
-}
-
-function wireUI() {
+function wireUI(){
   elFileInput.addEventListener("change", async (e) => {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
@@ -547,17 +517,12 @@ function wireUI() {
   elBtnAlign.addEventListener("click", doAlign);
   elBtnClear.addEventListener("click", clearAll);
 
-  elSearchBox.addEventListener("input", () => {
-    state.search = elSearchBox.value;
-    renderTable();
-  });
-
   elVariantMode.addEventListener("change", () => {
     state.variantMode = elVariantMode.value;
     renderTable();
   });
 
-  for (const cb of elTypeFilters) {
+  for (const cb of elTypeFilters){
     cb.addEventListener("change", () => {
       if (cb.checked) state.variantFilters.add(cb.value);
       else state.variantFilters.delete(cb.value);
@@ -566,8 +531,7 @@ function wireUI() {
   }
 
   elBtnSaveProject.addEventListener("click", () => {
-    const obj = collectProject();
-    downloadJSON(obj, "alignment_project.json");
+    downloadJSON(collectProject(), "alignment_project.json");
   });
 
   elProjectInput.addEventListener("change", async (e) => {
@@ -582,39 +546,50 @@ function wireUI() {
     const master = masterWitness();
     if (!master) return;
 
-    const visibles = getVisibleWitnessesOrdered();
+    recomputeFiltered();
+    const visibles = visibleWitnessesOrdered();
+
     const payload = {
       masterId: state.masterId,
       witnesses: visibles.map(w => ({
         id: w.id,
         name: w.name,
-        segments: state.filtered[w.id] || []
+        words: state.filtered[w.id] || []
       })),
-      alignment: state.alignment
+      alignment: state.mapping
     };
 
-    const tei = exportParallelTEI(payload);
-    downloadTextFile(tei, "parallel_corpus_alignment.tei.xml", "application/xml;charset=utf-8");
+    const tei = exportParallelTEIWords(payload);
+    downloadTextFile(tei, "parallel_alignment_words.tei.xml", "application/xml;charset=utf-8");
+  });
+
+  elBtnExportCSV.addEventListener("click", () => {
+    const master = masterWitness();
+    if (!master) return;
+
+    const witnessId = elCsvWitnessSelect.value;
+    const w = getWitness(witnessId);
+    if (!w) return;
+
+    recomputeFiltered();
+
+    const mWords = state.filtered[master.id] || [];
+    const wWords = state.filtered[w.id] || [];
+    const map = state.mapping[w.id] || Array(mWords.length).fill(null);
+
+    const csv = buildComparisonCSV(master.fileName || master.name, w.fileName || w.name, mWords, wWords, map);
+    downloadTextFile(csv, `compare_${master.fileName || "master"}__${w.fileName || "witness"}.csv`, "text/csv;charset=utf-8");
   });
 
   // help
-  const openHelp = () => {
-    helpModal.classList.remove("hidden");
-    helpModal.setAttribute("aria-hidden", "false");
-  };
-  const closeHelp = () => {
-    helpModal.classList.add("hidden");
-    helpModal.setAttribute("aria-hidden", "true");
-  };
-
+  const openHelp = () => { helpModal.classList.remove("hidden"); helpModal.setAttribute("aria-hidden","false"); };
+  const closeHelp = () => { helpModal.classList.add("hidden"); helpModal.setAttribute("aria-hidden","true"); };
   helpBtn.addEventListener("click", openHelp);
   helpCloseBackdrop.addEventListener("click", closeHelp);
   helpCloseX.addEventListener("click", closeHelp);
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closeHelp();
-  });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeHelp(); });
 }
 
 wireUI();
-updateButtons();
 renderTable();
+updateButtons();

@@ -1,4 +1,4 @@
-export function parseTEIToSegments(xmlText) {
+export function parseTEIToWords(xmlText) {
   const title = extractTitle(xmlText);
 
   const parser = new DOMParser();
@@ -6,8 +6,7 @@ export function parseTEIToSegments(xmlText) {
 
   const parseError = doc.querySelector("parsererror");
   if (parseError) {
-    // всё равно попробуем вытащить текст как есть
-    return { title: title || "TEI (parse error)", segments: fallbackSegments(xmlText) };
+    return { title: title || "TEI (parse error)", words: [] };
   }
 
   const textRoot =
@@ -15,21 +14,49 @@ export function parseTEIToSegments(xmlText) {
     doc.querySelector("TEI text") ||
     doc.documentElement;
 
-  const segments = [];
-  let currentPb = null;
-  let buffer = "";
-  let segIndex = 0;
+  const words = [];
+  let currentSheet = null; // number or null
 
-  function flush() {
-    const t = normalizeText(buffer);
-    if (t) {
-      segments.push({
-        idx: segIndex++,
-        pb: currentPb,
-        text: t
-      });
+  function sheetFromStr(s) {
+    const m = String(s ?? "").match(/(\d+)/);
+    return m ? parseInt(m[1], 10) : null;
+  }
+
+  function readWordForm(wEl) {
+    // Склеиваем текстовые части слова; <lb/> внутри <w> не даёт пробел.
+    let out = "";
+
+    const walker = doc.createTreeWalker(wEl, NodeFilter.SHOW_TEXT, null);
+    let node;
+    while ((node = walker.nextNode())) {
+      const t = String(node.nodeValue ?? "").replace(/\s+/g, " ").trim();
+      if (t) out += t;
     }
-    buffer = "";
+
+    return out;
+  }
+
+  function readFeats(wEl) {
+    // feats: name -> sorted unique values
+    const feats = {};
+    const fs = wEl.querySelector("fs");
+    if (!fs) return feats;
+
+    const fNodes = fs.querySelectorAll("f");
+    for (const f of fNodes) {
+      const name = f.getAttribute("name");
+      if (!name) continue;
+
+      const sym = f.querySelector("symbol");
+      const value = sym?.getAttribute("value") || "";
+
+      if (!feats[name]) feats[name] = new Set();
+      if (value) feats[name].add(value);
+    }
+
+    const out = {};
+    for (const k of Object.keys(feats)) out[k] = Array.from(feats[k]).sort();
+    return out;
   }
 
   function walk(node) {
@@ -39,68 +66,51 @@ export function parseTEIToSegments(xmlText) {
       const el = node;
       const name = (el.localName || el.nodeName || "").toLowerCase();
 
+      if (name === "milestone") {
+        const unit = (el.getAttribute("unit") || "").toLowerCase();
+        if (unit === "sheet") {
+          currentSheet = sheetFromStr(el.getAttribute("n"));
+        }
+      }
+
       if (name === "pb") {
-        // новая страница/лист
-        const n = el.getAttribute("n") || el.getAttribute("facs") || el.getAttribute("xml:id") || el.getAttribute("id");
-        if (buffer.trim()) flush();
-        currentPb = n || currentPb || null;
+        // fallback: если sheet ещё не выставлен milestone-ом
+        if (currentSheet === null) {
+          currentSheet = sheetFromStr(el.getAttribute("n"));
+        }
+      }
+
+      if (name === "w") {
+        const id = el.getAttribute("xml:id") || el.getAttribute("id") || "";
+        const lemma = el.getAttribute("lemma") || "";
+
+        const form = readWordForm(el);
+        const feats = readFeats(el);
+
+        words.push({
+          id,
+          form,
+          lemma,
+          feats,
+          sheet: currentSheet
+        });
         return;
       }
 
-      if (name === "lb") {
-        // конец строки — сегмент
-        flush();
-        return;
-      }
-
-      // блочные теги: при желании тоже можно флашить (оставим мягко)
-      if (["p","ab","div","head"].includes(name)) {
-        // добавим пробел, чтобы слова не склеивались
-        buffer += " ";
-      }
-
+      // продолжаем обход
       for (const child of el.childNodes) walk(child);
-
-      if (["p","ab","div"].includes(name)) buffer += " ";
       return;
-    }
-
-    if (node.nodeType === Node.TEXT_NODE) {
-      buffer += node.nodeValue;
     }
   }
 
   walk(textRoot);
-  flush();
-
-  // если вообще не нашли pb — проставим "?" чтобы фильтр не ломался
-  for (const s of segments) {
-    if (!s.pb) s.pb = "?";
-  }
-
-  return { title, segments };
+  return { title, words };
 }
 
 function extractTitle(xmlText) {
-  // очень грубо: вытащить <title>...</title>
-  const m = xmlText.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  if (!m) return "";
-  return stripTags(m[1]).trim();
+  const m = String(xmlText || "").match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  return m ? stripTags(m[1]).trim() : "";
 }
-
 function stripTags(s) {
   return String(s || "").replace(/<[^>]+>/g, "");
-}
-
-function normalizeText(s) {
-  return String(s || "")
-    .replace(/\s+/g, " ")
-    .replace(/\u00A0/g, " ")
-    .trim();
-}
-
-function fallbackSegments(xmlText) {
-  // если TEI не парсится — делим по строкам
-  const lines = xmlText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-  return lines.slice(0, 400).map((t, i) => ({ idx: i, pb: "?", text: t }));
 }

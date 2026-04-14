@@ -12,36 +12,34 @@
       Параллельный корпус списков (XML‑TEI): «Притча о блудном сыне» (Лк 15:11–32)
     </div>
     <div class="topbar__subtitle">
-      Загрузка TEI → выбор листов → выравнивание → ручная правка → разночтения → экспорт TEI
+      Загрузка TEI → выбор Master и листов → выравнивание по словам → ручная правка → разночтения → экспорт TEI/CSV
     </div>
   </header>
 
   <div class="layout">
     <aside class="sidebar">
+
       <section class="card">
         <h2>1) Загрузка TEI</h2>
-
         <div class="row">
           <input id="fileInput" type="file" accept=".xml,.tei,.txt" multiple />
         </div>
-
         <div class="hint">
-          Загрузи несколько файлов XML‑TEI (Unicode). Для отображения славянских букв желательно наличие шрифтов BukyVede/Menaion Unicode на ПК.
+          Пожалуйста, загрузите несколько файлов XML‑TEI (Unicode).
+          Выравнивание выполняется по словам (<code>&lt;w&gt;</code>),
+          переносы строк (<code>&lt;lb/&gt;</code>) не влияют.
         </div>
-
         <div id="witnessList" class="witnessList"></div>
       </section>
 
       <section class="card">
         <h2>2) Выравнивание</h2>
-
         <div class="row">
           <button id="btnAlign" class="btn btn--primary" disabled>Автовыравнивание</button>
           <button id="btnClear" class="btn" disabled>Сброс</button>
         </div>
-
         <div class="hint">
-          Сначала выбери главный список (Master) и диапазон листов у каждого списка (например, 117–119).
+          Сначала выберите главный список (Master) и укажите диапазоны листов для каждого списка (например, 117–119).
         </div>
       </section>
 
@@ -57,22 +55,20 @@
         </div>
 
         <div class="row">
-          <label class="label">Показывать только строки с выбранными типами:</label>
+          <label class="label">Фильтр строк:</label>
           <select id="variantMode" class="input">
-            <option value="any" selected>Да (есть хотя бы один тип)</option>
-            <option value="all">Только если все типы входят в выбранные</option>
-            <option value="off">Не фильтровать по типам</option>
+            <option value="off" selected>Не фильтровать по типам</option>
+            <option value="any">Показывать строки, где есть выбранные типы</option>
           </select>
         </div>
 
         <div class="hint">
-          Типы определяются эвристически (автоматически). При ручной правке выравнивания типы пересчитываются.
+          Пропуск слова в списке отмечается как <b>---</b>.
         </div>
       </section>
 
       <section class="card">
         <h2>4) Сохранение / продолжение</h2>
-
         <div class="row">
           <button id="btnSaveProject" class="btn" disabled>Скачать проект (.json)</button>
           <label class="btn btn--file" title="Загрузить проект JSON">
@@ -80,34 +76,40 @@
             <input id="projectInput" type="file" accept=".json" hidden />
           </label>
         </div>
-
         <div class="hint">
-          Это позволяет продолжить работу в следующем сеансе без повторной загрузки TEI.
+          Это позволяет продолжить работу в следующих сеансах без повторной загрузки TEI.
         </div>
       </section>
 
       <section class="card">
-        <h2>5) Экспорт TEI</h2>
+        <h2>5) Экспорт</h2>
 
         <div class="row">
-          <button id="btnExportTEI" class="btn btn--primary" disabled>Скачать TEI (параллельный корпус)</button>
+          <button id="btnExportTEI" class="btn btn--primary" disabled>Скачать TEI</button>
+        </div>
+
+        <div class="row" style="margin-top:10px;">
+          <label class="label" for="csvWitnessSelect">CSV для списка:</label>
+          <select id="csvWitnessSelect" class="input"></select>
+          <button id="btnExportCSV" class="btn btn--primary" disabled>Скачать CSV</button>
         </div>
 
         <div class="hint">
-          Экспорт: единый TEI-файл с сегментами и <code>standOff/linkGrp</code> выравнивания.
+          CSV: <b>ID</b> (из Master), <b>Эталон</b>, <b>Лемма</b>,
+          <b>Слово</b> (или <b>---</b>), <b>Тип</b>.
         </div>
       </section>
+
     </aside>
 
     <main class="main">
       <section class="card">
         <div class="mainHeader">
           <div>
-            <h2 style="margin:0;">Параллельное представление</h2>
-            <div id="status" class="status">Загрузи TEI файлы, выбери Master и диапазоны листов.</div>
-          </div>
-          <div class="row">
-            <input id="searchBox" class="input" placeholder="Поиск по тексту (в пределах master)..." />
+            <h2 style="margin:0;">Параллельное представление (по словам)</h2>
+            <div id="status" class="status">
+              Пожалуйста, загрузите TEI файлы, выберите Master и диапазоны листов.
+            </div>
           </div>
         </div>
 
@@ -116,10 +118,8 @@
     </main>
   </div>
 
-  <!-- Кнопка помощи -->
   <button id="helpBtn" class="helpBtn" title="Справка">?</button>
 
-  <!-- Модалка помощи -->
   <div id="helpModal" class="modal hidden" aria-hidden="true">
     <div class="modal__backdrop" id="helpCloseBackdrop"></div>
     <div class="modal__body">
@@ -129,22 +129,18 @@
       </div>
       <div class="modal__content">
         <ol class="helpList">
-          <li><b>Загрузка:</b> нажми «Загрузка TEI» → выбери несколько XML‑TEI файлов.</li>
-          <li><b>Master:</b> у одного списка отметь «Master».</li>
-          <li><b>Листы:</b> у каждого списка укажи диапазон (например, 117–119). Это фильтрует сегменты по <code>&lt;pb&gt;</code>.</li>
-          <li><b>Автовыравнивание:</b> нажми «Автовыравнивание».</li>
-          <li><b>Ручная правка:</b> в таблице у каждой ячейки есть кнопки <b>▲/▼</b> для сдвига выравнивания по строкам.</li>
-          <li><b>Разночтения:</b> включай/выключай типы и режим фильтрации слева.</li>
-          <li><b>Сохранить/продолжить:</b> «Скачать проект (.json)», потом «Загрузить проект».</li>
-          <li><b>Экспорт TEI:</b> «Скачать TEI» — единый файл с параллельным корпусом.</li>
+          <li><b>Загрузка:</b> выберите несколько XML‑TEI файлов.</li>
+          <li><b>Master:</b> отметьте один список как «Master».</li>
+          <li><b>Листы:</b> укажите диапазон листов для каждого списка (например, 117–119).</li>
+          <li><b>Выравнивание:</b> нажмите «Автовыравнивание» (по словам <code>&lt;w&gt;</code>).</li>
+          <li><b>Ручная правка:</b> кнопки <b>◀/▶</b> сдвигают соответствие на 1 слово.</li>
+          <li><b>CSV:</b> выберите список и скачайте CSV.</li>
+          <li><b>TEI:</b> скачайте TEI с <code>standOff/linkGrp</code>.</li>
         </ol>
-        <div class="hint">
-          Если таблица большая — используй поиск по master (вверху справа).
-        </div>
       </div>
     </div>
   </div>
 
-  <script type="module" src="./js/app.js"></script>
+  <script type="module" src="./js/app.js?v=2026-04-14-2"></script>
 </body>
 </html>
