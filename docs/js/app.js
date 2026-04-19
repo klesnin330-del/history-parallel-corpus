@@ -1,594 +1,268 @@
-import { parseTEIToWords } from "./tei.js";
-import { alignWordsToMaster, shiftMapping } from "./align.js";
-import { classifyPair, escapeHtml } from "./variants.js";
-import { exportParallelTEIWords } from "./export_tei.js";
-import { buildComparisonCSV } from "./export_csv.js";
+import { parseTEIToTokens } from "./tei.js";
+import { alignTokens, shiftMapping } from "./align.js";
+import { classifyPair, escapeHtml, tokenSimilarity } from "./variants.js";
+import { exportParallelTEI } from "./export_tei.js";
 import { downloadTextFile, downloadJSON, loadJSONFile } from "./storage.js";
 
 const state = {
-  witnesses: [],   // {id,name,fileName,teiText,wordsAll,range:{from,to},visible}
+  witnesses: [],
   masterId: null,
   order: [],
-  filtered: {},    // witnessId -> words[] in range
-  mapping: {},     // witnessId -> mapping array len=masterWordsLen
-  variantFilters: new Set(["graphic","phonetic","morph","syntax","lexical"]),
-  variantMode: "off",
+  mapping: {},
+  variantFilters: new Set(["graphic", "phonetic", "morph", "syntax", "lexical"]),
+  variantMode: "off"
 };
 
-const elFileInput = document.getElementById("fileInput");
-const elWitnessList = document.getElementById("witnessList");
-const elBtnAlign = document.getElementById("btnAlign");
-const elBtnClear = document.getElementById("btnClear");
-const elBtnSaveProject = document.getElementById("btnSaveProject");
-const elProjectInput = document.getElementById("projectInput");
-const elBtnExportTEI = document.getElementById("btnExportTEI");
-const elCsvWitnessSelect = document.getElementById("csvWitnessSelect");
-const elBtnExportCSV = document.getElementById("btnExportCSV");
-const elStatus = document.getElementById("status");
-const elTableWrap = document.getElementById("tableWrap");
-const elVariantMode = document.getElementById("variantMode");
-const elTypeFilters = Array.from(document.querySelectorAll(".typeFilter"));
+const els = {
+  fileInput: document.getElementById("fileInput"),
+  witnessList: document.getElementById("witnessList"),
+  btnAlign: document.getElementById("btnAlign"),
+  btnClear: document.getElementById("btnClear"),
+  btnSave: document.getElementById("btnSaveProject"),
+  projectInput: document.getElementById("projectInput"),
+  btnExport: document.getElementById("btnExportTEI"),
+  status: document.getElementById("status"),
+  tableWrap: document.getElementById("tableWrap"),
+  contextPane: document.getElementById("contextPane"),
+  variantMode: document.getElementById("variantMode"),
+  typeFilters: Array.from(document.querySelectorAll(".typeFilter") || []),
+  helpBtn: document.getElementById("helpBtn"),
+  helpModal: document.getElementById("helpModal")
+};
 
-const helpBtn = document.getElementById("helpBtn");
-const helpModal = document.getElementById("helpModal");
-const helpCloseBackdrop = document.getElementById("helpCloseBackdrop");
-const helpCloseX = document.getElementById("helpCloseX");
+function uid() { return Math.random().toString(36).substr(2, 9) + Date.now().toString(36); }
+function setStatus(msg) { els.status.textContent = msg; }
+function getWitness(id) { return state.witnesses.find(w => w.id === id); }
+function masterWitness() { return getWitness(state.masterId); }
 
-function setStatus(t){ elStatus.textContent = t; }
-function uid(){ return Math.random().toString(16).slice(2) + Date.now().toString(16); }
-function getWitness(id){ return state.witnesses.find(w => w.id === id); }
-function masterWitness(){ return getWitness(state.masterId); }
-
-function toNum(s) {
-  const m = String(s ?? "").match(/(\d+)/);
-  return m ? parseInt(m[1], 10) : null;
+function updateButtons() {
+  els.btnAlign.disabled = !(state.witnesses.length >= 2 && state.masterId);
+  els.btnClear.disabled = state.witnesses.length === 0;
+  els.btnSave.disabled = state.witnesses.length === 0;
+  els.btnExport.disabled = Object.keys(state.mapping).length === 0;
 }
 
-function filterWordsBySheets(words, range) {
-  const fromN = toNum(range?.from);
-  const toN = toNum(range?.to);
-  if (!fromN || !toN) return words;
-
-  const lo = Math.min(fromN, toN);
-  const hi = Math.max(fromN, toN);
-
-  return words.filter(w => {
-    const sh = w.sheet;
-    if (sh === null || sh === undefined) return true;
-    return sh >= lo && sh <= hi;
-  });
-}
-
-function recomputeFiltered(){
-  state.filtered = {};
-  for (const w of state.witnesses) {
-    state.filtered[w.id] = filterWordsBySheets(w.wordsAll, w.range || {from:"",to:""});
-  }
-}
-
-function ensureOrder(){
-  const ids = state.witnesses.map(w => w.id);
-  if (!state.order.length) state.order = [...ids];
-  for (const id of ids) if (!state.order.includes(id)) state.order.push(id);
-  state.order = state.order.filter(id => ids.includes(id));
-}
-
-function visibleWitnessesOrdered(){
-  return state.order.map(id => getWitness(id)).filter(Boolean).filter(w => w.visible);
-}
-
-function canAlign(){
-  return state.witnesses.length >= 2 && !!state.masterId;
-}
-
-function updateButtons(){
-  elBtnAlign.disabled = !canAlign();
-  elBtnClear.disabled = state.witnesses.length === 0;
-  elBtnSaveProject.disabled = state.witnesses.length === 0;
-  elBtnExportTEI.disabled = Object.keys(state.mapping).length === 0;
-  elBtnExportCSV.disabled = Object.keys(state.mapping).length === 0;
-}
-
-function renderCsvSelect(){
-  const master = masterWitness();
-  elCsvWitnessSelect.innerHTML = "";
-
-  const opts = [];
-  for (const w of state.witnesses) {
-    if (!master || w.id === master.id) continue;
-    opts.push(w);
-  }
-
-  if (opts.length === 0) {
-    const o = document.createElement("option");
-    o.value = "";
-    o.textContent = "Нет списков для сравнения";
-    elCsvWitnessSelect.appendChild(o);
-    elBtnExportCSV.disabled = true;
-    return;
-  }
-
-  for (const w of opts) {
-    const o = document.createElement("option");
-    o.value = w.id;
-    o.textContent = w.fileName || w.name;
-    elCsvWitnessSelect.appendChild(o);
-  }
-
-  elBtnExportCSV.disabled = Object.keys(state.mapping).length === 0;
-}
-
-function renderWitnessList(){
-  ensureOrder();
-  recomputeFiltered();
-  elWitnessList.innerHTML = "";
-
-  for (const id of state.order){
+function renderWitnessList() {
+  els.witnessList.innerHTML = '';
+  state.order = state.witnesses.map(w => w.id);
+  for (const id of state.order) {
     const w = getWitness(id);
     if (!w) continue;
-
-    const div = document.createElement("div");
-    div.className = "witness";
-
-    const title = document.createElement("div");
-    title.className = "witness__title";
-    title.textContent = w.name || w.fileName;
-    div.appendChild(title);
-
-    const meta = document.createElement("div");
-    meta.className = "witness__meta";
-
-    const vis = document.createElement("label");
-    vis.className = "label";
-    vis.innerHTML = `<input type="checkbox" ${w.visible ? "checked":""}/> Показ`;
-    vis.querySelector("input").addEventListener("change", (e) => {
-      w.visible = e.target.checked;
-      renderTable();
+    const div = document.createElement('div');
+    div.className = 'witness' + (w.id === state.masterId ? ' active' : '');
+    div.innerHTML = `
+      <div class="witness__title">${escapeHtml(w.name || w.fileName)}</div>
+      <div class="witness__meta">
+        <label class="label"><input type="checkbox" class="visCb" ${w.visible ? 'checked' : ''}> Видимость</label>
+        <label class="label"><input type="radio" name="masterRadio" ${w.id === state.masterId ? 'checked' : ''}> Master</label>
+        <div class="orderBtns"><button class="upBtn">↑</button><button class="downBtn">↓</button></div>
+      </div>
+      <div class="tag">Слов: ${w.tokensAll.length}</div>
+    `;
+    div.querySelector('.visCb').addEventListener('change', e => { w.visible = e.target.checked; renderTable(); });
+    div.querySelector('input[name="masterRadio"]').addEventListener('change', () => {
+      state.masterId = w.id; state.mapping = {}; renderWitnessList(); renderTable(); updateButtons();
     });
-    meta.appendChild(vis);
-
-    const master = document.createElement("label");
-    master.className = "label";
-    master.innerHTML = `<input type="radio" name="masterRadio" ${w.id===state.masterId?"checked":""}/> Master`;
-    master.querySelector("input").addEventListener("change", () => {
-      state.masterId = w.id;
-      state.mapping = {};
-      setStatus(`Master выбран: ${w.name}. Пожалуйста, нажмите «Автовыравнивание».`);
-      renderWitnessList();
-      renderCsvSelect();
-      renderTable();
-      updateButtons();
-    });
-    meta.appendChild(master);
-
-    const from = document.createElement("input");
-    from.className = "smallInput";
-    from.placeholder = "лист от";
-    from.value = w.range?.from ?? "";
-    from.addEventListener("change", () => {
-      w.range = w.range || {from:"",to:""};
-      w.range.from = from.value.trim();
-      state.mapping = {};
-      renderWitnessList();
-      renderCsvSelect();
-      renderTable();
-      updateButtons();
-      setStatus("Диапазоны листов обновлены. Пожалуйста, выполните выравнивание повторно.");
-    });
-
-    const to = document.createElement("input");
-    to.className = "smallInput";
-    to.placeholder = "лист до";
-    to.value = w.range?.to ?? "";
-    to.addEventListener("change", () => {
-      w.range = w.range || {from:"",to:""};
-      w.range.to = to.value.trim();
-      state.mapping = {};
-      renderWitnessList();
-      renderCsvSelect();
-      renderTable();
-      updateButtons();
-      setStatus("Диапазоны листов обновлены. Пожалуйста, выполните выравнивание повторно.");
-    });
-
-    meta.appendChild(document.createTextNode("Листы: "));
-    meta.appendChild(from);
-    meta.appendChild(to);
-
-    const orderBtns = document.createElement("div");
-    orderBtns.className = "orderBtns";
-    const up = document.createElement("button"); up.textContent = "↑";
-    const down = document.createElement("button"); down.textContent = "↓";
-    up.addEventListener("click", () => {
+    div.querySelector('.upBtn').addEventListener('click', () => {
       const i = state.order.indexOf(w.id);
-      if (i > 0) {
-        [state.order[i-1], state.order[i]] = [state.order[i], state.order[i-1]];
-        renderWitnessList(); renderTable();
-      }
+      if (i > 0) { [state.order[i-1], state.order[i]] = [state.order[i], state.order[i-1]]; renderWitnessList(); renderTable(); }
     });
-    down.addEventListener("click", () => {
+    div.querySelector('.downBtn').addEventListener('click', () => {
       const i = state.order.indexOf(w.id);
-      if (i >= 0 && i < state.order.length - 1) {
-        [state.order[i+1], state.order[i]] = [state.order[i], state.order[i+1]];
-        renderWitnessList(); renderTable();
-      }
+      if (i < state.order.length - 1) { [state.order[i], state.order[i+1]] = [state.order[i+1], state.order[i]]; renderWitnessList(); renderTable(); }
     });
-    orderBtns.appendChild(up); orderBtns.appendChild(down);
-    meta.appendChild(orderBtns);
-
-    div.appendChild(meta);
-
-    const cntAll = w.wordsAll.length;
-    const cntF = state.filtered[w.id]?.length ?? 0;
-    const tag = document.createElement("div");
-    tag.className = "tag";
-    tag.textContent = `Слов всего: ${cntAll}, в диапазоне: ${cntF}`;
-    div.appendChild(tag);
-
-    elWitnessList.appendChild(div);
+    els.witnessList.appendChild(div);
   }
 }
 
-function rowPassesVariantFilter(rowTypes){
-  if (state.variantMode === "off") return true;
-  if (!rowTypes || rowTypes.size === 0) return false;
-  for (const t of rowTypes) if (state.variantFilters.has(t)) return true;
-  return false;
+function showContext(witnessId, tokenIndex) {
+  const w = getWitness(witnessId);
+  if (!w || tokenIndex === null) {
+    els.contextPane.classList.add('hidden');
+    return;
+  }
+  const start = Math.max(0, tokenIndex - 10);
+  const end = Math.min(w.tokensAll.length, tokenIndex + 11);
+  const slice = w.tokensAll.slice(start, end);
+  const html = slice.map((t, i) => {
+    const isTarget = (start + i) === tokenIndex;
+    return `<span class="${isTarget ? 'contextPane__highlight' : ''}">${escapeHtml(t.form)}</span>`;
+  }).join(' ');
+  els.contextPane.innerHTML = `
+    <div class="contextPane__title">Контекст: ${escapeHtml(w.name)} (исходный индекс #${tokenIndex + 1})</div>
+    <div class="contextPane__text">... ${html} ...</div>
+  `;
+  els.contextPane.classList.remove('hidden');
+  els.contextPane.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
-function renderTable(){
+function renderTable() {
+  els.contextPane.classList.add('hidden');
   const master = masterWitness();
-  if (!master){
-    elTableWrap.innerHTML = `<div style="padding:12px;color:#666;">Пожалуйста, выберите Master.</div>`;
+  if (!master) {
+    els.tableWrap.innerHTML = '<div style="padding:12px;color:#666;">Выберите Master.</div>';
     return;
   }
-
-  recomputeFiltered();
-  const mWords = state.filtered[master.id] || [];
-  const visibles = visibleWitnessesOrdered();
-
-  if (mWords.length === 0){
-    elTableWrap.innerHTML = `<div style="padding:12px;color:#666;">У Master нет слов в указанном диапазоне листов.</div>`;
+  const mTokens = master.tokensAll;
+  if (mTokens.length === 0) {
+    els.tableWrap.innerHTML = '<div style="padding:12px;color:#666;">Нет слов для отображения.</div>';
     return;
   }
+  const visibles = state.order.map(id => getWitness(id)).filter(w => w && w.visible);
+  const hasMap = Object.keys(state.mapping).length > 0;
 
-  if (visibles.length === 0){
-    elTableWrap.innerHTML = `<div style="padding:12px;color:#666;">Пожалуйста, включите отображение хотя бы одного списка.</div>`;
-    return;
-  }
-
-  const hasMapping = Object.keys(state.mapping).length > 0;
-
-  const table = document.createElement("table");
-  table.className = "table";
-
-  const thead = document.createElement("thead");
-  const trh = document.createElement("tr");
-
-  const th0 = document.createElement("th"); th0.textContent = "№ / лист";
-  const th1 = document.createElement("th"); th1.textContent = "ЭТАЛОН";
-  const th2 = document.createElement("th"); th2.textContent = "Лемма";
-  trh.appendChild(th0); trh.appendChild(th1); trh.appendChild(th2);
-
-  for (const w of visibles){
+  const table = document.createElement('table');
+  table.className = 'table';
+  const thead = document.createElement('thead');
+  const trh = document.createElement('tr');
+  trh.innerHTML = '<th>№</th><th>ЭТАЛОН</th><th>Лемма</th>';
+  for (const w of visibles) {
     if (w.id === master.id) continue;
-    const th = document.createElement("th");
-    th.innerHTML = `<div>${escapeHtml(w.name)}</div><div class="tag">${escapeHtml(w.fileName || "")}</div>`;
-    trh.appendChild(th);
+    trh.innerHTML += `<th>${escapeHtml(w.name)}<br><span class="tag">${escapeHtml(w.fileName)}</span></th>`;
   }
-
   thead.appendChild(trh);
   table.appendChild(thead);
 
-  const tbody = document.createElement("tbody");
-
-  for (let i = 0; i < mWords.length; i++){
-    const mTok = mWords[i];
-    const tr = document.createElement("tr");
-
-    const td0 = document.createElement("td");
-    td0.innerHTML = `<div><b>${i+1}</b></div><div class="tag">лист: ${escapeHtml(String(mTok.sheet ?? "?"))}</div>`;
-    tr.appendChild(td0);
-
-    const tdM = document.createElement("td");
-    tdM.innerHTML = `<div class="cellText">${escapeHtml(mTok.form || "")}</div>`;
-    tr.appendChild(tdM);
-
-    const tdL = document.createElement("td");
-    tdL.innerHTML = `<div class="cellText">${escapeHtml(mTok.lemma || "")}</div>`;
-    tr.appendChild(tdL);
-
+  const tbody = document.createElement('tbody');
+  for (let i = 0; i < mTokens.length; i++) {
+    const mTok = mTokens[i];
     let rowTypes = new Set();
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td><b>${i+1}</b></td><td><div class="cellText" data-wid="${master.id}" data-tidx="${mTok.rawIndex}">${escapeHtml(mTok.form)}</div></td><td><div class="cellText">${escapeHtml(mTok.lemma)}</div></td>`;
 
-    for (const w of visibles){
+    for (const w of visibles) {
       if (w.id === master.id) continue;
-
-      const td = document.createElement("td");
-      const wWords = state.filtered[w.id] || [];
-
-      let j = null;
-      if (hasMapping && state.mapping[w.id]) j = state.mapping[w.id][i];
-
-      const wTok = (j === null || j === undefined) ? null : wWords[j];
+      const td = document.createElement('td');
+      const wTokens = w.tokensAll;
+      let j = hasMap && state.mapping[w.id] ? state.mapping[w.id][i] : null;
+      const wTok = (j === null || j === undefined || j < 0 || j >= wTokens.length) ? null : wTokens[j];
       const cls = classifyPair(mTok, wTok);
-      for (const t of cls.types) rowTypes.add(t);
+      
+      // 🔒 БЕЗОПАСНАЯ ИТЕРАЦИЯ (исправляет вашу ошибку)
+      if (cls.types) {
+        for (const t of cls.types) rowTypes.add(t);
+      }
 
-      const wordText = wTok ? wTok.form : "---";
-      td.innerHTML = `<div class="cellText">${escapeHtml(wordText)}</div>`;
-
-      const tools = document.createElement("div");
-      tools.className = "cellTools";
-
-      const left = document.createElement("button");
-      left.className = "shiftBtn";
-      left.textContent = "◀";
-      left.title = "Сдвинуть соответствие на 1 слово назад";
-
-      const right = document.createElement("button");
-      right.className = "shiftBtn";
-      right.textContent = "▶";
-      right.title = "Сдвинуть соответствие на 1 слово вперёд";
-
-      left.addEventListener("click", () => {
-        if (!state.mapping[w.id]) state.mapping[w.id] = Array(mWords.length).fill(null);
-        shiftMapping(state.mapping[w.id], i, -1, wWords.length);
+      const wordText = wTok ? wTok.form : '---';
+      td.innerHTML = `
+        <div class="cellText" data-wid="${w.id}" data-tidx="${wTok ? wTok.rawIndex : 'null'}">${escapeHtml(wordText)}</div>
+        <div class="cellTools">
+          <button class="shiftBtn" title="Назад">◀</button>
+          <button class="shiftBtn" title="Вперёд">▶</button>
+          <div class="badgeRow"><span class="badge ${cls.types?.size ? Array.from(cls.types)[0] : ''}">${cls.label}</span></div>
+        </div>
+      `;
+      td.querySelector('.cellText').addEventListener('click', () => showContext(w.id, wTok ? wTok.rawIndex : null));
+      td.querySelector('.shiftBtn[title="Назад"]').addEventListener('click', () => {
+        if (!state.mapping[w.id]) state.mapping[w.id] = Array(mTokens.length).fill(null);
+        shiftMapping(state.mapping[w.id], i, -1, wTokens.length);
         renderTable();
       });
-      right.addEventListener("click", () => {
-        if (!state.mapping[w.id]) state.mapping[w.id] = Array(mWords.length).fill(null);
-        shiftMapping(state.mapping[w.id], i, +1, wWords.length);
+      td.querySelector('.shiftBtn[title="Вперёд"]').addEventListener('click', () => {
+        if (!state.mapping[w.id]) state.mapping[w.id] = Array(mTokens.length).fill(null);
+        shiftMapping(state.mapping[w.id], i, 1, wTokens.length);
         renderTable();
       });
-
-      const badges = document.createElement("div");
-      badges.className = "badgeRow";
-      const b = document.createElement("span");
-      b.className = "badge";
-      b.textContent = cls.label;
-      badges.appendChild(b);
-
-      tools.appendChild(left);
-      tools.appendChild(right);
-
-      td.appendChild(tools);
-      td.appendChild(badges);
       tr.appendChild(td);
     }
 
-    if (rowPassesVariantFilter(rowTypes)) tbody.appendChild(tr);
-  }
+    tr.querySelector('.cellText').addEventListener('click', () => showContext(master.id, mTok.rawIndex));
 
+    const pass = state.variantMode === 'off' || (rowTypes.size > 0 && [...rowTypes].some(t => state.variantFilters.has(t)));
+    if (pass) tbody.appendChild(tr);
+  }
   table.appendChild(tbody);
-  elTableWrap.innerHTML = "";
-  elTableWrap.appendChild(table);
+  els.tableWrap.innerHTML = '';
+  els.tableWrap.appendChild(table);
 }
 
-async function doAlign(){
+async function doAlign() {
   const master = masterWitness();
   if (!master) return;
-
-  recomputeFiltered();
-  const mWords = state.filtered[master.id] || [];
-  if (mWords.length === 0) {
-    setStatus("У Master нет слов в заданном диапазоне листов.");
-    return;
-  }
-
-  setStatus("Автовыравнивание…");
+  setStatus("Выравнивание...");
   state.mapping = {};
-
-  for (const w of state.witnesses){
+  for (const w of state.witnesses) {
     if (w.id === master.id) continue;
-    const wWords = state.filtered[w.id] || [];
-    state.mapping[w.id] = alignWordsToMaster(mWords, wWords);
+    state.mapping[w.id] = alignTokens(master.tokensAll, w.tokensAll);
   }
-
-  setStatus("Готово: выравнивание построено. При необходимости используйте ◀/▶ для ручной правки.");
-  renderWitnessList();
-  renderCsvSelect();
-  updateButtons();
-  renderTable();
+  setStatus("Готово. Используйте ◀/▶ для ручной правки. Кликните на слово для контекста (±10 слов).");
+  renderTable(); updateButtons();
 }
 
-function clearAll(){
-  state.witnesses = [];
-  state.masterId = null;
-  state.order = [];
-  state.filtered = {};
-  state.mapping = {};
-  setStatus("Сброшено.");
-  elCsvWitnessSelect.innerHTML = "";
-  renderWitnessList();
-  renderTable();
-  updateButtons();
+function clearAll() {
+  state.witnesses = []; state.masterId = null; state.order = []; state.mapping = {};
+  setStatus("Сброшено."); renderWitnessList(); renderTable(); updateButtons();
 }
 
-function readFileAsText(file){
-  return new Promise((resolve, reject) => {
-    const fr = new FileReader();
-    fr.onload = () => resolve(fr.result);
-    fr.onerror = reject;
-    fr.readAsText(file);
-  });
-}
-
-async function handleFiles(files){
-  setStatus("Чтение файлов…");
-
-  for (const f of files){
-    const text = await readFileAsText(f);
-    const parsed = parseTEIToWords(text);
-
-    state.witnesses.push({
-      id: uid(),
-      name: parsed.title || f.name,
-      fileName: f.name,
-      teiText: text,
-      wordsAll: parsed.words,
-      range: { from:"", to:"" },
-      visible: true
-    });
+async function handleFiles(files) {
+  setStatus("Чтение файлов...");
+  for (const f of files) {
+    const text = await f.text();
+    const parsed = parseTEIToTokens(text);
+    state.witnesses.push({ id: uid(), name: parsed.title || f.name, fileName: f.name, teiText: text, tokensAll: parsed.tokens, visible: true });
   }
-
   if (!state.masterId && state.witnesses.length) state.masterId = state.witnesses[0].id;
-
-  ensureOrder();
-  recomputeFiltered();
-  renderWitnessList();
-  renderCsvSelect();
-  renderTable();
-  updateButtons();
-
-  setStatus("Файлы загружены. Пожалуйста, выберите Master и диапазоны листов, затем нажмите «Автовыравнивание».");
+  renderWitnessList(); renderTable(); updateButtons();
+  setStatus("Файлы загружены. Выберите Master и нажмите «Автовыравнивание».");
 }
 
-function collectProject(){
+function collectProject() {
   return {
-    version: 4,
-    createdAt: new Date().toISOString(),
-    witnesses: state.witnesses.map(w => ({
-      id: w.id,
-      name: w.name,
-      fileName: w.fileName,
-      teiText: w.teiText,
-      range: w.range,
-      visible: w.visible
-    })),
-    masterId: state.masterId,
-    order: state.order,
-    mapping: state.mapping,
-    variantFilters: Array.from(state.variantFilters),
-    variantMode: state.variantMode
+    version: 1, createdAt: new Date().toISOString(),
+    witnesses: state.witnesses.map(w => ({ id: w.id, name: w.name, fileName: w.fileName, teiText: w.teiText, visible: w.visible })),
+    masterId: state.masterId, order: state.order, mapping: state.mapping,
+    variantFilters: Array.from(state.variantFilters), variantMode: state.variantMode
   };
 }
 
-async function loadProject(obj){
-  clearAll();
-  setStatus("Загрузка проекта…");
-
-  for (const w0 of obj.witnesses){
-    const parsed = parseTEIToWords(w0.teiText);
-    state.witnesses.push({
-      id: w0.id,
-      name: w0.name || parsed.title || w0.fileName,
-      fileName: w0.fileName,
-      teiText: w0.teiText,
-      wordsAll: parsed.words,
-      range: w0.range || {from:"",to:""},
-      visible: (w0.visible !== false)
-    });
+async function loadProject(obj) {
+  clearAll(); setStatus("Загрузка проекта...");
+  for (const w0 of obj.witnesses) {
+    const parsed = parseTEIToTokens(w0.teiText);
+    state.witnesses.push({ id: w0.id, name: w0.name || parsed.title || w0.fileName, fileName: w0.fileName, teiText: w0.teiText, tokensAll: parsed.tokens, visible: (w0.visible !== false) });
   }
-
-  state.masterId = obj.masterId || (state.witnesses[0]?.id ?? null);
-  state.order = obj.order || [];
-  state.mapping = obj.mapping || {};
+  state.masterId = obj.masterId || state.witnesses[0]?.id;
+  state.order = obj.order || []; state.mapping = obj.mapping || {};
   state.variantFilters = new Set(obj.variantFilters || ["graphic","phonetic","morph","syntax","lexical"]);
   state.variantMode = obj.variantMode || "off";
-
-  elVariantMode.value = state.variantMode;
-  for (const cb of elTypeFilters) cb.checked = state.variantFilters.has(cb.value);
-
-  ensureOrder();
-  recomputeFiltered();
-  renderWitnessList();
-  renderCsvSelect();
-  renderTable();
-  updateButtons();
-
-  setStatus("Проект загружен. При необходимости нажмите «Автовыравнивание» для пересчёта.");
+  els.variantMode.value = state.variantMode;
+  for (const cb of els.typeFilters || []) cb.checked = state.variantFilters.has(cb.value);
+  renderWitnessList(); renderTable(); updateButtons();
+  setStatus("Проект загружен.");
 }
 
-function wireUI(){
-  elFileInput.addEventListener("change", async (e) => {
-    const files = Array.from(e.target.files || []);
-    if (!files.length) return;
-    await handleFiles(files);
-    elFileInput.value = "";
+function wireUI() {
+  if (els.fileInput) els.fileInput.addEventListener('change', async e => {
+    if (e.target.files.length) { await handleFiles(Array.from(e.target.files)); e.target.value = ''; }
   });
-
-  elBtnAlign.addEventListener("click", doAlign);
-  elBtnClear.addEventListener("click", clearAll);
-
-  elVariantMode.addEventListener("change", () => {
-    state.variantMode = elVariantMode.value;
-    renderTable();
+  if (els.btnAlign) els.btnAlign.addEventListener('click', doAlign);
+  if (els.btnClear) els.btnClear.addEventListener('click', clearAll);
+  if (els.btnSave) els.btnSave.addEventListener('click', () => downloadJSON(collectProject(), "project_history.json"));
+  if (els.projectInput) els.projectInput.addEventListener('change', async e => {
+    if (e.target.files[0]) { await loadProject(await loadJSONFile(e.target.files[0])); e.target.value = ''; }
   });
-
-  for (const cb of elTypeFilters){
-    cb.addEventListener("change", () => {
-      if (cb.checked) state.variantFilters.add(cb.value);
-      else state.variantFilters.delete(cb.value);
-      renderTable();
+  if (els.btnExport) els.btnExport.addEventListener('click', () => {
+    const visibles = state.order.map(id => getWitness(id)).filter(w => w && w.visible);
+    const payload = { masterId: state.masterId, witnesses: visibles.map(w => ({ id: w.id, name: w.name, tokens: w.tokensAll })), mapping: state.mapping };
+    downloadTextFile(exportParallelTEI(payload), "parallel_corpus.tei.xml", "application/xml;charset=utf-8");
+  });
+  if (els.variantMode) els.variantMode.addEventListener('change', () => { state.variantMode = els.variantMode.value; renderTable(); });
+  for (const cb of els.typeFilters || []) {
+    cb.addEventListener('change', () => {
+      if (cb.checked) state.variantFilters.add(cb.value); else state.variantFilters.delete(cb.value); renderTable();
     });
   }
-
-  elBtnSaveProject.addEventListener("click", () => {
-    downloadJSON(collectProject(), "alignment_project.json");
-  });
-
-  elProjectInput.addEventListener("change", async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const obj = await loadJSONFile(file);
-    await loadProject(obj);
-    elProjectInput.value = "";
-  });
-
-  elBtnExportTEI.addEventListener("click", () => {
-    const master = masterWitness();
-    if (!master) return;
-
-    recomputeFiltered();
-    const visibles = visibleWitnessesOrdered();
-
-    const payload = {
-      masterId: state.masterId,
-      witnesses: visibles.map(w => ({
-        id: w.id,
-        name: w.name,
-        words: state.filtered[w.id] || []
-      })),
-      alignment: state.mapping
-    };
-
-    const tei = exportParallelTEIWords(payload);
-    downloadTextFile(tei, "parallel_alignment_words.tei.xml", "application/xml;charset=utf-8");
-  });
-
-  elBtnExportCSV.addEventListener("click", () => {
-    const master = masterWitness();
-    if (!master) return;
-
-    const witnessId = elCsvWitnessSelect.value;
-    const w = getWitness(witnessId);
-    if (!w) return;
-
-    recomputeFiltered();
-
-    const mWords = state.filtered[master.id] || [];
-    const wWords = state.filtered[w.id] || [];
-    const map = state.mapping[w.id] || Array(mWords.length).fill(null);
-
-    const csv = buildComparisonCSV(
-      master.fileName || master.name,
-      w.fileName || w.name,
-      mWords, wWords, map
-    );
-
-    downloadTextFile(
-      csv,
-      `compare_${master.fileName || "master"}__${w.fileName || "witness"}.csv`,
-      "text/csv;charset=utf-8"
-    );
-  });
-
-  // help
-  const openHelp = () => { helpModal.classList.remove("hidden"); helpModal.setAttribute("aria-hidden","false"); };
-  const closeHelp = () => { helpModal.classList.add("hidden"); helpModal.setAttribute("aria-hidden","true"); };
-  helpBtn.addEventListener("click", openHelp);
-  helpCloseBackdrop.addEventListener("click", closeHelp);
-  helpCloseX.addEventListener("click", closeHelp);
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeHelp(); });
+  
+  const openHelp = () => { if(els.helpModal) { els.helpModal.classList.remove('hidden'); els.helpModal.setAttribute('aria-hidden', 'false'); } };
+  const closeHelp = () => { if(els.helpModal) { els.helpModal.classList.add('hidden'); els.helpModal.setAttribute('aria-hidden', 'true'); } };
+  if (els.helpBtn) els.helpBtn.addEventListener('click', openHelp);
+  if (els.helpModal) {
+    const closeB = els.helpModal.querySelector('#helpCloseBackdrop');
+    const closeX = els.helpModal.querySelector('#helpCloseX');
+    if (closeB) closeB.addEventListener('click', closeHelp);
+    if (closeX) closeX.addEventListener('click', closeHelp);
+  }
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeHelp(); });
 }
 
 wireUI();

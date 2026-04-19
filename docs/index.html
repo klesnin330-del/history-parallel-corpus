@@ -1,34 +1,25 @@
 <!doctype html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Параллельный корпус списков: Притча о блудном сыне (Лк 15:11–32)</title>
-  <link rel="stylesheet" href="./css/style.css" />
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Параллельный корпус: Притча о блудном сыне</title>
+  <link rel="stylesheet" href="./css/style.css"/>
 </head>
 <body>
   <header class="topbar">
-    <div class="topbar__title">
-      Параллельный корпус списков (XML‑TEI): «Притча о блудном сыне» (Лк 15:11–32)
-    </div>
-    <div class="topbar__subtitle">
-      Загрузка TEI → выбор Master и листов → выравнивание по словам → ручная правка → разночтения → экспорт TEI/CSV
-    </div>
+    <div class="topbar__title">Параллельный корпус списков (XML-TEI)</div>
+    <div class="topbar__subtitle">«Притча о блудном сыне» (Лк 15:11–32)</div>
   </header>
 
   <div class="layout">
     <aside class="sidebar">
-
       <section class="card">
         <h2>1) Загрузка TEI</h2>
         <div class="row">
           <input id="fileInput" type="file" accept=".xml,.tei,.txt" multiple />
         </div>
-        <div class="hint">
-          Пожалуйста, загрузите несколько файлов XML‑TEI (Unicode).
-          Выравнивание выполняется по словам (<code>&lt;w&gt;</code>),
-          переносы строк (<code>&lt;lb/&gt;</code>) не влияют.
-        </div>
+        <div class="hint">Загрузите несколько XML-TEI файлов (Unicode). Выравнивание выполняется по словам (<code>&lt;w&gt;</code>).</div>
         <div id="witnessList" class="witnessList"></div>
       </section>
 
@@ -38,14 +29,11 @@
           <button id="btnAlign" class="btn btn--primary" disabled>Автовыравнивание</button>
           <button id="btnClear" class="btn" disabled>Сброс</button>
         </div>
-        <div class="hint">
-          Сначала выберите главный список (Master) и укажите диапазоны листов для каждого списка (например, 117–119).
-        </div>
+        <div class="hint">Выберите главный список (Master). Остальные подстроятся автоматически.</div>
       </section>
 
       <section class="card">
         <h2>3) Разночтения</h2>
-
         <div class="row">
           <label class="label"><input type="checkbox" class="typeFilter" value="graphic" checked> графические</label>
           <label class="label"><input type="checkbox" class="typeFilter" value="phonetic" checked> фонетические</label>
@@ -53,94 +41,55 @@
           <label class="label"><input type="checkbox" class="typeFilter" value="syntax" checked> синтаксические</label>
           <label class="label"><input type="checkbox" class="typeFilter" value="lexical" checked> лексические</label>
         </div>
-
         <div class="row">
-          <label class="label">Фильтр строк:</label>
           <select id="variantMode" class="input">
-            <option value="off" selected>Не фильтровать по типам</option>
-            <option value="any">Показывать строки, где есть выбранные типы</option>
+            <option value="off" selected>Показывать всё</option>
+            <option value="any">Только строки с выбранными типами</option>
           </select>
         </div>
-
-        <div class="hint">
-          Пропуск слова в списке отмечается как <b>---</b>.
-        </div>
+        <div class="hint">Если соответствия нет, отображается <b>---</b>. Кликните на слово для контекста.</div>
       </section>
 
       <section class="card">
-        <h2>4) Сохранение / продолжение</h2>
+        <h2>4) Проект и экспорт</h2>
         <div class="row">
-          <button id="btnSaveProject" class="btn" disabled>Скачать проект (.json)</button>
-          <label class="btn btn--file" title="Загрузить проект JSON">
-            Загрузить проект
-            <input id="projectInput" type="file" accept=".json" hidden />
-          </label>
+          <button id="btnSaveProject" class="btn" disabled>Сохранить JSON</button>
+          <label class="btn btn--file">Загрузить JSON<input id="projectInput" type="file" accept=".json" hidden/></label>
         </div>
-        <div class="hint">
-          Это позволяет продолжить работу в следующих сеансах без повторной загрузки TEI.
+        <div class="row">
+          <button id="btnExportTEI" class="btn btn--primary" disabled>Экспорт TEI</button>
         </div>
       </section>
-
-      <section class="card">
-        <h2>5) Экспорт</h2>
-
-        <div class="row">
-          <button id="btnExportTEI" class="btn btn--primary" disabled>Скачать TEI</button>
-        </div>
-
-        <div class="row" style="margin-top:10px;">
-          <label class="label" for="csvWitnessSelect">CSV для списка:</label>
-          <select id="csvWitnessSelect" class="input"></select>
-          <button id="btnExportCSV" class="btn btn--primary" disabled>Скачать CSV</button>
-        </div>
-
-        <div class="hint">
-          CSV: <b>ID</b> (из Master), <b>Эталон</b>, <b>Лемма</b>,
-          <b>Слово</b> (или <b>---</b>), <b>Тип</b>.
-        </div>
-      </section>
-
     </aside>
 
     <main class="main">
-      <section class="card">
-        <div class="mainHeader">
-          <div>
-            <h2 style="margin:0;">Параллельное представление (по словам)</h2>
-            <div id="status" class="status">
-              Пожалуйста, загрузите TEI файлы, выберите Master и диапазоны листов.
-            </div>
-          </div>
-        </div>
-
-        <div id="tableWrap" class="tableWrap"></div>
-      </section>
+      <div id="status" class="status">Загрузите файлы и нажмите «Автовыравнивание».</div>
+      <div id="tableWrap" class="tableWrap"></div>
+      <div id="contextPane" class="contextPane hidden"></div>
     </main>
   </div>
 
   <button id="helpBtn" class="helpBtn" title="Справка">?</button>
-
   <div id="helpModal" class="modal hidden" aria-hidden="true">
     <div class="modal__backdrop" id="helpCloseBackdrop"></div>
     <div class="modal__body">
       <div class="modal__header">
-        <div class="modal__title">Краткая справка</div>
+        <span class="modal__title">Краткая справка</span>
         <button id="helpCloseX" class="modal__close">×</button>
       </div>
       <div class="modal__content">
         <ol class="helpList">
-          <li><b>Загрузка:</b> выберите несколько XML‑TEI файлов.</li>
-          <li><b>Master:</b> отметьте один список как «Master».</li>
-          <li><b>Листы:</b> укажите диапазон листов для каждого списка (например, 117–119).</li>
-          <li><b>Выравнивание:</b> нажмите «Автовыравнивание» (по словам <code>&lt;w&gt;</code>).</li>
-          <li><b>Ручная правка:</b> кнопки <b>◀/▶</b> сдвигают соответствие на 1 слово.</li>
-          <li><b>CSV:</b> выберите список и скачайте CSV.</li>
-          <li><b>TEI:</b> скачайте TEI с <code>standOff/linkGrp</code>.</li>
+          <li>Загрузите XML-TEI файлы.</li>
+          <li>Выберите один список как <b>Master</b>.</li>
+          <li>Нажмите <b>«Автовыравнивание»</b>.</li>
+          <li>Кликните на любое слово в таблице, чтобы увидеть контекст (±10 слов).</li>
+          <li>Используйте <b>◀/▶</b> для ручной правки соответствия.</li>
+          <li>Сохраните проект в JSON или экспортируйте в TEI.</li>
         </ol>
       </div>
     </div>
   </div>
 
-  <script type="module" src="./js/app.js?v=2026-04-14-2"></script>
+  <script type="module" src="./js/app.js"></script>
 </body>
 </html>

@@ -1,87 +1,68 @@
-export function tokenSimilarity(aTok, bTok) {
-  if (!aTok || !bTok) return 0;
-
-  const la = normLemma(aTok.lemma);
-  const lb = normLemma(bTok.lemma);
-  if (la && lb && la === lb) return 1.0;
-
-  const a = normPhonetic(aTok.form);
-  const b = normPhonetic(bTok.form);
-  return similarity(a, b);
-}
-
 export function classifyPair(masterTok, otherTok) {
-  if (!otherTok) return { label: "Пропуск", types: new Set() };
+  const safeTypes = new Set();
+  if (!otherTok) return { label: "Пропуск", types: safeTypes };
+  if (!masterTok || !masterTok.form) return { label: "Не определено", types: safeTypes };
 
-  const A = normGraphic(masterTok?.form);
-  const B = normGraphic(otherTok?.form);
+  const normA = normalizeGraphic(masterTok.form);
+  const normB = normalizeGraphic(otherTok.form);
+  if (normA === normB && normA !== '') return { label: "Идентично", types: safeTypes };
 
-  if (A && B && A === B) return { label: "Идентично", types: new Set() };
+  const simForm = similarity(normalizePhonetic(masterTok.form), normalizePhonetic(otherTok.form));
+  const normLemmaA = normalizeGraphic(masterTok.lemma || '');
+  const normLemmaB = normalizeGraphic(otherTok.lemma || '');
+  const lemmaEq = normLemmaA && normLemmaB && normLemmaA === normLemmaB;
 
-  const sim = similarity(normPhonetic(masterTok?.form), normPhonetic(otherTok?.form));
-
-  const la = normLemma(masterTok?.lemma);
-  const lb = normLemma(otherTok?.lemma);
-  const lemmaEq = la && lb && la === lb;
-
-  if (sim >= 0.78) {
-    return { label: "Графическое/Фон.", types: new Set(["graphic", "phonetic"]) };
+  if (simForm >= 0.78) {
+    safeTypes.add("graphic"); safeTypes.add("phonetic");
+    return { label: "Графическое/Фонетическое", types: safeTypes };
   }
-
   if (lemmaEq) {
-    return { label: "Морфологическое", types: new Set(["morph"]) };
+    safeTypes.add("morph");
+    return { label: "Морфологическое", types: safeTypes };
   }
-
-  return { label: "Лексическое", types: new Set(["lexical"]) };
+  safeTypes.add("lexical");
+  return { label: "Лексическое", types: safeTypes };
 }
 
-function normGraphic(s) {
-  return String(s || "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+function normalizeGraphic(s) {
+  return String(s || '').toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, '').trim();
 }
 
-function normLemma(s) {
-  return normGraphic(s);
-}
-
-function normPhonetic(s) {
-  let t = normGraphic(s);
-
+function normalizePhonetic(s) {
+  let t = normalizeGraphic(s);
   const map = [
-    [/ѣ/g, "е"], [/і/g, "и"], [/ѳ/g, "ф"], [/ѵ/g, "и"],
-    [/ꙗ/g, "я"], [/ꙋ/g, "у"], [/ѫ/g, "у"], [/ѧ/g, "я"],
-    [/ѯ/g, "кс"], [/ѱ/g, "пс"], [/ѡ/g, "о"],
+    [/ѣ/g, 'е'], [/ѳ/g, 'ф'], [/ѵ/g, 'и'], [/ꙗ/g, 'я'],
+    [/ꙋ/g, 'у'], [/ѫ/g, 'у'], [/ѧ/g, 'я'], [/ѯ/g, 'кс'],
+    [/ѱ/g, 'пс'], [/ѡ/g, 'о'], [/ꙑ/g, 'ы']
   ];
   for (const [re, rep] of map) t = t.replace(re, rep);
+  t = t.replace(/ъ\b/g, '').replace(/ь\b/g, '');
+  return t;
+}
 
-  t = t.replace(/ъ\b/g, "").replace(/ь\b/g, "");
-  return t.replace(/\s+/g, " ").trim();
+export function tokenSimilarity(a, b) {
+  if (!a || !b) return 0;
+  const la = normalizeGraphic(a.lemma || '');
+  const lb = normalizeGraphic(b.lemma || '');
+  if (la && lb && la === lb) return 1.0;
+  return similarity(normalizePhonetic(a.form), normalizePhonetic(b.form));
 }
 
 function similarity(a, b) {
   if (!a && !b) return 1;
   if (!a || !b) return 0;
-
-  const aa = a.slice(0, 80);
-  const bb = b.slice(0, 80);
-  const d = levenshtein(aa, bb);
-  const maxLen = Math.max(aa.length, bb.length);
-  return maxLen === 0 ? 1 : (1 - d / maxLen);
+  const d = levenshtein(a.slice(0, 60), b.slice(0, 60));
+  const max = Math.max(a.length, b.length);
+  return max === 0 ? 1 : (1 - d / max);
 }
 
 function levenshtein(a, b) {
   const n = a.length, m = b.length;
   if (n === 0) return m;
   if (m === 0) return n;
-
   const prev = new Uint16Array(m + 1);
   const curr = new Uint16Array(m + 1);
   for (let j = 0; j <= m; j++) prev[j] = j;
-
   for (let i = 1; i <= n; i++) {
     curr[0] = i;
     const ai = a.charCodeAt(i - 1);
@@ -95,9 +76,5 @@ function levenshtein(a, b) {
 }
 
 export function escapeHtml(s) {
-  return String(s ?? "")
-    .replaceAll("&","&amp;")
-    .replaceAll("<","&lt;")
-    .replaceAll(">","&gt;")
-    .replaceAll('"',"&quot;");
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
