@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>Параллельный корпус: Притча о блудном сыне</title>
+  <title>Параллельный корпус списков: Притча о блудном сыне (Лк 15:11–32)</title>
   <link rel="stylesheet" href="./css/style.css"/>
 </head>
 <body>
@@ -14,24 +14,27 @@
 
   <div class="layout">
     <aside class="sidebar">
+      <!-- 1) Загрузка -->
       <section class="card">
         <h2>1) Загрузка TEI</h2>
         <div class="row">
           <input id="fileInput" type="file" accept=".xml,.tei,.txt" multiple />
         </div>
-        <div class="hint">Загрузите несколько XML-TEI файлов (Unicode). Выравнивание выполняется по словам (<code>&lt;w&gt;</code>).</div>
+        <div class="hint">Загрузите XML-TEI файлы (Unicode). Выравнивание выполняется по словам (<code>&lt;w&gt;</code>).</div>
         <div id="witnessList" class="witnessList"></div>
       </section>
 
+      <!-- 2) Выравнивание -->
       <section class="card">
         <h2>2) Выравнивание</h2>
         <div class="row">
           <button id="btnAlign" class="btn btn--primary" disabled>Автовыравнивание</button>
           <button id="btnClear" class="btn" disabled>Сброс</button>
         </div>
-        <div class="hint">Выберите главный список (Master). Остальные подстроятся автоматически.</div>
+        <div class="hint">Выберите Master. Остальные подстроятся автоматически.</div>
       </section>
 
+      <!-- 3) Разночтения -->
       <section class="card">
         <h2>3) Разночтения</h2>
         <div class="row">
@@ -42,14 +45,28 @@
           <label class="label"><input type="checkbox" class="typeFilter" value="lexical" checked> лексические</label>
         </div>
         <div class="row">
+          <label class="label">Фильтр строк:</label>
           <select id="variantMode" class="input">
-            <option value="off" selected>Показывать всё</option>
+            <option value="off" selected>Не фильтровать</option>
             <option value="any">Только строки с выбранными типами</option>
           </select>
         </div>
-        <div class="hint">Если соответствия нет, отображается <b>---</b>. Кликните на слово для контекста.</div>
+        <div class="row">
+          <label class="label">Сортировка строк:</label>
+          <select id="sortMode" class="input">
+            <option value="original" selected>Как в тексте (по порядку)</option>
+            <option value="identical_first">Сначала идентичные</option>
+            <option value="variants_first">Сначала разночтения</option>
+            <option value="graphic_first">Сначала графические/фонетические</option>
+            <option value="morph_first">Сначала морфологические</option>
+            <option value="lexical_first">Сначала лексические</option>
+            <option value="gaps_first">Сначала пропуски (---)</option>
+          </select>
+        </div>
+        <div class="hint">Кликните на слово для контекста (±10 слов). Используйте ◀/▶ для ручной правки.</div>
       </section>
 
+      <!-- 4) Проект и экспорт -->
       <section class="card">
         <h2>4) Проект и экспорт</h2>
         <div class="row">
@@ -65,10 +82,10 @@
     <main class="main">
       <div id="status" class="status">Загрузите файлы и нажмите «Автовыравнивание».</div>
       <div id="tableWrap" class="tableWrap"></div>
-      <div id="contextPane" class="contextPane hidden"></div>
     </main>
   </div>
 
+  <!-- Модальное окно справки -->
   <button id="helpBtn" class="helpBtn" title="Справка">?</button>
   <div id="helpModal" class="modal hidden" aria-hidden="true">
     <div class="modal__backdrop" id="helpCloseBackdrop"></div>
@@ -82,10 +99,28 @@
           <li>Загрузите XML-TEI файлы.</li>
           <li>Выберите один список как <b>Master</b>.</li>
           <li>Нажмите <b>«Автовыравнивание»</b>.</li>
-          <li>Кликните на любое слово в таблице, чтобы увидеть контекст (±10 слов).</li>
-          <li>Используйте <b>◀/▶</b> для ручной правки соответствия.</li>
+          <li>Кликните на слово для контекста (±10 слов). Используйте <b>◀/▶</b> для правки.</li>
           <li>Сохраните проект в JSON или экспортируйте в TEI.</li>
         </ol>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модальное окно контекста (не сдвигает таблицу) -->
+  <div id="contextModal" class="modal hidden" aria-hidden="true">
+    <div class="modal__backdrop"></div>
+    <div class="modal__body">
+      <div class="modal__header">
+        <span id="ctxTitle" class="modal__title">Контекст</span>
+        <button id="ctxClose" class="modal__close" title="Закрыть и вернуться к строке">×</button>
+      </div>
+      <div class="modal__content">
+        <div id="ctxText" style="line-height:1.6;"></div>
+        <div style="margin-top:12px;text-align:center;">
+          <button onclick="document.getElementById('ctxClose').click()" class="btn btn--primary">
+            Закрыть и вернуться к строке
+          </button>
+        </div>
       </div>
     </div>
   </div>

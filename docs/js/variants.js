@@ -1,51 +1,56 @@
+// 🔥 АБСОЛЮТНАЯ ОЧИСТКА: удаляет ВСЕ надстрочные знаки, титла, диакритику и пунктуацию
+function cleanBaseText(s) {
+  if (!s) return "";
+  return String(s)
+    .toLowerCase()
+    .normalize("NFD")
+    // 1. Удаляем ВСЕ комбинирующие символы Unicode (категория Mark: Mn, Mc, Me)
+    // Это покрывает титла (҃), каморы, еры, ударения, придыхания и любые другие "закорючки"
+    .replace(/\p{M}/gu, "")
+    // 2. Фоллбэк-регулярка для старых движков (если \p{M} не поддерживается)
+    .replace(/[\u0300-\u036f\u0483-\u0489\u1ab0-\u1aff\u1dc0-\u1dff\u20d0-\u20ff\ufe20-\ufe2f]/g, "")
+    // 3. Убираем прилипшую пунктуацию, скобки и пробелы
+    .replace(/[-–—.,;:!?«»""„‟‹›(){}\[\]\s]/g, "")
+    // 4. Whitelist: оставляем ТОЛЬКО буквы кириллицы (включая старославянские) и цифры
+    .replace(/[^а-яёa-z0-9ѣѫѧѳѵꙗѯѱѡꙑії]/gi, "")
+    .trim();
+}
+
+export function tokenSimilarity(aTok, bTok) {
+  if (!aTok || !bTok) return 0;
+  const la = cleanBaseText(aTok.lemma);
+  const lb = cleanBaseText(bTok.lemma);
+  if (la && lb && la === lb) return 1.0;
+  return similarity(cleanBaseText(aTok.form), cleanBaseText(bTok.form));
+}
+
 export function classifyPair(masterTok, otherTok) {
-  const safeTypes = new Set();
-  if (!otherTok) return { label: "Пропуск", types: safeTypes };
-  if (!masterTok || !masterTok.form) return { label: "Не определено", types: safeTypes };
+  if (!otherTok) return { label: "Пропуск", types: new Set() };
 
-  const normA = normalizeGraphic(masterTok.form);
-  const normB = normalizeGraphic(otherTok.form);
-  if (normA === normB && normA !== '') return { label: "Идентично", types: safeTypes };
+  const A = cleanBaseText(masterTok?.form);
+  const B = cleanBaseText(otherTok?.form);
 
-  const simForm = similarity(normalizePhonetic(masterTok.form), normalizePhonetic(otherTok.form));
-  const normLemmaA = normalizeGraphic(masterTok.lemma || '');
-  const normLemmaB = normalizeGraphic(otherTok.lemma || '');
-  const lemmaEq = normLemmaA && normLemmaB && normLemmaA === normLemmaB;
+  // 1️⃣ Строгая идентичность (после тотального удаления надстрочных знаков)
+  if (A && B && A === B) {
+    return { label: "Идентично", types: new Set() };
+  }
 
-  if (simForm >= 0.78) {
-    safeTypes.add("graphic"); safeTypes.add("phonetic");
-    return { label: "Графическое/Фонетическое", types: safeTypes };
+  // 2️⃣ Фонетико-графическое сходство (считается на уже очищенных строках)
+  const sim = similarity(A, B);
+
+  // 3️⃣ Лемматическое сравнение (тоже очищенное)
+  const la = cleanBaseText(masterTok?.lemma);
+  const lb = cleanBaseText(otherTok?.lemma);
+  const lemmaEq = la && lb && la === lb;
+
+  // 📊 Логика классификации (от точного к общему)
+  if (sim >= 0.72) {
+    return { label: "Графическое/Фонетическое", types: new Set(["graphic", "phonetic"]) };
   }
   if (lemmaEq) {
-    safeTypes.add("morph");
-    return { label: "Морфологическое", types: safeTypes };
+    return { label: "Морфологическое", types: new Set(["morph"]) };
   }
-  safeTypes.add("lexical");
-  return { label: "Лексическое", types: safeTypes };
-}
-
-function normalizeGraphic(s) {
-  return String(s || '').toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, '').trim();
-}
-
-function normalizePhonetic(s) {
-  let t = normalizeGraphic(s);
-  const map = [
-    [/ѣ/g, 'е'], [/ѳ/g, 'ф'], [/ѵ/g, 'и'], [/ꙗ/g, 'я'],
-    [/ꙋ/g, 'у'], [/ѫ/g, 'у'], [/ѧ/g, 'я'], [/ѯ/g, 'кс'],
-    [/ѱ/g, 'пс'], [/ѡ/g, 'о'], [/ꙑ/g, 'ы']
-  ];
-  for (const [re, rep] of map) t = t.replace(re, rep);
-  t = t.replace(/ъ\b/g, '').replace(/ь\b/g, '');
-  return t;
-}
-
-export function tokenSimilarity(a, b) {
-  if (!a || !b) return 0;
-  const la = normalizeGraphic(a.lemma || '');
-  const lb = normalizeGraphic(b.lemma || '');
-  if (la && lb && la === lb) return 1.0;
-  return similarity(normalizePhonetic(a.form), normalizePhonetic(b.form));
+  return { label: "Лексическое", types: new Set(["lexical"]) };
 }
 
 function similarity(a, b) {
@@ -76,5 +81,9 @@ function levenshtein(a, b) {
 }
 
 export function escapeHtml(s) {
-  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }

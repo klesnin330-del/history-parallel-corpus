@@ -1,6 +1,6 @@
 import { parseTEIToTokens } from "./tei.js";
 import { alignTokens, shiftMapping } from "./align.js";
-import { classifyPair, escapeHtml, tokenSimilarity } from "./variants.js";
+import { classifyPair, escapeHtml } from "./variants.js";
 import { exportParallelTEI } from "./export_tei.js";
 import { downloadTextFile, downloadJSON, loadJSONFile } from "./storage.js";
 
@@ -10,7 +10,8 @@ const state = {
   order: [],
   mapping: {},
   variantFilters: new Set(["graphic", "phonetic", "morph", "syntax", "lexical"]),
-  variantMode: "off"
+  variantMode: "off",
+  sortMode: "original"
 };
 
 const els = {
@@ -23,11 +24,15 @@ const els = {
   btnExport: document.getElementById("btnExportTEI"),
   status: document.getElementById("status"),
   tableWrap: document.getElementById("tableWrap"),
-  contextPane: document.getElementById("contextPane"),
   variantMode: document.getElementById("variantMode"),
+  sortMode: document.getElementById("sortMode"),
   typeFilters: Array.from(document.querySelectorAll(".typeFilter") || []),
   helpBtn: document.getElementById("helpBtn"),
-  helpModal: document.getElementById("helpModal")
+  helpModal: document.getElementById("helpModal"),
+  contextModal: document.getElementById("contextModal"),
+  ctxTitle: document.getElementById("ctxTitle"),
+  ctxText: document.getElementById("ctxText"),
+  ctxClose: document.getElementById("ctxClose")
 };
 
 function uid() { return Math.random().toString(36).substr(2, 9) + Date.now().toString(36); }
@@ -75,29 +80,86 @@ function renderWitnessList() {
   }
 }
 
-function showContext(witnessId, tokenIndex) {
+// 🔑 НОВОЕ: Модальное окно контекста + возврат к строке
+function showContextModal(witnessId, tokenIndex) {
   const w = getWitness(witnessId);
-  if (!w || tokenIndex === null) {
-    els.contextPane.classList.add('hidden');
-    return;
-  }
+  if (!w || tokenIndex === null) return;
+  
   const start = Math.max(0, tokenIndex - 10);
   const end = Math.min(w.tokensAll.length, tokenIndex + 11);
   const slice = w.tokensAll.slice(start, end);
   const html = slice.map((t, i) => {
     const isTarget = (start + i) === tokenIndex;
-    return `<span class="${isTarget ? 'contextPane__highlight' : ''}">${escapeHtml(t.form)}</span>`;
+    return `<span class="${isTarget ? 'ctx-highlight' : ''}">${escapeHtml(t.form)}</span>`;
   }).join(' ');
-  els.contextPane.innerHTML = `
-    <div class="contextPane__title">Контекст: ${escapeHtml(w.name)} (исходный индекс #${tokenIndex + 1})</div>
-    <div class="contextPane__text">... ${html} ...</div>
-  `;
-  els.contextPane.classList.remove('hidden');
-  els.contextPane.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  
+  els.ctxTitle.textContent = `Контекст: ${w.name} (слово #${tokenIndex + 1})`;
+  els.ctxText.innerHTML = `... ${html} ...`;
+  els.contextModal.classList.remove('hidden');
+  els.contextModal.setAttribute('aria-hidden', 'false');
+  
+  // Сохраняем данные для возврата
+  els.contextModal.dataset.wid = witnessId;
+  els.contextModal.dataset.tidx = tokenIndex;
+}
+
+function closeContextAndScrollToRow() {
+  const wid = els.contextModal.dataset.wid;
+  const tidx = parseInt(els.contextModal.dataset.tidx, 10);
+  els.contextModal.classList.add('hidden');
+  els.contextModal.setAttribute('aria-hidden', 'true');
+  
+  if (!wid || isNaN(tidx)) return;
+  
+  // Находим строку в таблице и скроллим к ней
+  const rows = els.tableWrap.querySelectorAll('tbody tr');
+  for (const tr of rows) {
+    const masterCell = tr.querySelector('.cellText[data-wid]');
+    if (masterCell && masterCell.dataset.wid === wid && masterCell.dataset.tidx === String(tidx)) {
+      tr.classList.add('highlight-row');
+      tr.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setTimeout(() => tr.classList.remove('highlight-row'), 2000);
+      break;
+    }
+  }
+}
+
+function getSortPriority(rowTypes, hasGap) {
+  const mode = state.sortMode;
+  if (mode === "original") return 0;
+  if (mode === "identical_first") {
+    if (!hasGap && rowTypes.size === 0) return 0;
+    if (hasGap) return 2;
+    return 1;
+  }
+  if (mode === "variants_first") {
+    if (hasGap || rowTypes.size > 0) return 0;
+    return 1;
+  }
+  if (mode === "graphic_first") {
+    if (rowTypes.has("graphic") || rowTypes.has("phonetic")) return 0;
+    if (hasGap || rowTypes.size > 0) return 1;
+    return 2;
+  }
+  if (mode === "morph_first") {
+    if (rowTypes.has("morph")) return 0;
+    if (hasGap || rowTypes.size > 0) return 1;
+    return 2;
+  }
+  if (mode === "lexical_first") {
+    if (rowTypes.has("lexical")) return 0;
+    if (hasGap || rowTypes.size > 0) return 1;
+    return 2;
+  }
+  if (mode === "gaps_first") {
+    if (hasGap) return 0;
+    if (rowTypes.size > 0) return 1;
+    return 2;
+  }
+  return 0;
 }
 
 function renderTable() {
-  els.contextPane.classList.add('hidden');
   const master = masterWitness();
   if (!master) {
     els.tableWrap.innerHTML = '<div style="padding:12px;color:#666;">Выберите Master.</div>';
@@ -110,6 +172,33 @@ function renderTable() {
   }
   const visibles = state.order.map(id => getWitness(id)).filter(w => w && w.visible);
   const hasMap = Object.keys(state.mapping).length > 0;
+
+  const rowsData = [];
+  for (let i = 0; i < mTokens.length; i++) {
+    const mTok = mTokens[i];
+    const rowTypes = new Set();
+    let hasGap = false;
+    for (const w of visibles) {
+      if (w.id === master.id) continue;
+      const wTokens = w.tokensAll;
+      let j = hasMap && state.mapping[w.id] ? state.mapping[w.id][i] : null;
+      const wTok = (j === null || j === undefined || j < 0 || j >= wTokens.length) ? null : wTokens[j];
+      const cls = classifyPair(mTok, wTok);
+      if (cls.types) { for (const t of cls.types) rowTypes.add(t); }
+      if (!wTok) hasGap = true;
+    }
+    rowsData.push({
+      originalIndex: i,
+      mTok: mTok,
+      rowTypes: rowTypes,
+      hasGap: hasGap,
+      sortPriority: getSortPriority(rowTypes, hasGap)
+    });
+  }
+
+  if (state.sortMode !== "original") {
+    rowsData.sort((a, b) => a.sortPriority - b.sortPriority || a.originalIndex - b.originalIndex);
+  }
 
   const table = document.createElement('table');
   table.className = 'table';
@@ -124,9 +213,9 @@ function renderTable() {
   table.appendChild(thead);
 
   const tbody = document.createElement('tbody');
-  for (let i = 0; i < mTokens.length; i++) {
-    const mTok = mTokens[i];
-    let rowTypes = new Set();
+  for (const rowData of rowsData) {
+    const i = rowData.originalIndex;
+    const mTok = rowData.mTok;
     const tr = document.createElement('tr');
     tr.innerHTML = `<td><b>${i+1}</b></td><td><div class="cellText" data-wid="${master.id}" data-tidx="${mTok.rawIndex}">${escapeHtml(mTok.form)}</div></td><td><div class="cellText">${escapeHtml(mTok.lemma)}</div></td>`;
 
@@ -138,11 +227,6 @@ function renderTable() {
       const wTok = (j === null || j === undefined || j < 0 || j >= wTokens.length) ? null : wTokens[j];
       const cls = classifyPair(mTok, wTok);
       
-      // 🔒 БЕЗОПАСНАЯ ИТЕРАЦИЯ (исправляет вашу ошибку)
-      if (cls.types) {
-        for (const t of cls.types) rowTypes.add(t);
-      }
-
       const wordText = wTok ? wTok.form : '---';
       td.innerHTML = `
         <div class="cellText" data-wid="${w.id}" data-tidx="${wTok ? wTok.rawIndex : 'null'}">${escapeHtml(wordText)}</div>
@@ -152,7 +236,7 @@ function renderTable() {
           <div class="badgeRow"><span class="badge ${cls.types?.size ? Array.from(cls.types)[0] : ''}">${cls.label}</span></div>
         </div>
       `;
-      td.querySelector('.cellText').addEventListener('click', () => showContext(w.id, wTok ? wTok.rawIndex : null));
+      td.querySelector('.cellText').addEventListener('click', () => showContextModal(w.id, wTok ? wTok.rawIndex : null));
       td.querySelector('.shiftBtn[title="Назад"]').addEventListener('click', () => {
         if (!state.mapping[w.id]) state.mapping[w.id] = Array(mTokens.length).fill(null);
         shiftMapping(state.mapping[w.id], i, -1, wTokens.length);
@@ -166,9 +250,8 @@ function renderTable() {
       tr.appendChild(td);
     }
 
-    tr.querySelector('.cellText').addEventListener('click', () => showContext(master.id, mTok.rawIndex));
-
-    const pass = state.variantMode === 'off' || (rowTypes.size > 0 && [...rowTypes].some(t => state.variantFilters.has(t)));
+    tr.querySelector('.cellText').addEventListener('click', () => showContextModal(master.id, mTok.rawIndex));
+    const pass = state.variantMode === 'off' || (rowData.rowTypes.size > 0 && [...rowData.rowTypes].some(t => state.variantFilters.has(t)));
     if (pass) tbody.appendChild(tr);
   }
   table.appendChild(tbody);
@@ -185,7 +268,7 @@ async function doAlign() {
     if (w.id === master.id) continue;
     state.mapping[w.id] = alignTokens(master.tokensAll, w.tokensAll);
   }
-  setStatus("Готово. Используйте ◀/▶ для ручной правки. Кликните на слово для контекста (±10 слов).");
+  setStatus("Готово. Используйте ◀/▶ для правки. Кликните на слово для контекста.");
   renderTable(); updateButtons();
 }
 
@@ -211,7 +294,7 @@ function collectProject() {
     version: 1, createdAt: new Date().toISOString(),
     witnesses: state.witnesses.map(w => ({ id: w.id, name: w.name, fileName: w.fileName, teiText: w.teiText, visible: w.visible })),
     masterId: state.masterId, order: state.order, mapping: state.mapping,
-    variantFilters: Array.from(state.variantFilters), variantMode: state.variantMode
+    variantFilters: Array.from(state.variantFilters), variantMode: state.variantMode, sortMode: state.sortMode
   };
 }
 
@@ -225,7 +308,9 @@ async function loadProject(obj) {
   state.order = obj.order || []; state.mapping = obj.mapping || {};
   state.variantFilters = new Set(obj.variantFilters || ["graphic","phonetic","morph","syntax","lexical"]);
   state.variantMode = obj.variantMode || "off";
-  els.variantMode.value = state.variantMode;
+  state.sortMode = obj.sortMode || "original";
+  if(els.variantMode) els.variantMode.value = state.variantMode;
+  if(els.sortMode) els.sortMode.value = state.sortMode;
   for (const cb of els.typeFilters || []) cb.checked = state.variantFilters.has(cb.value);
   renderWitnessList(); renderTable(); updateButtons();
   setStatus("Проект загружен.");
@@ -247,6 +332,7 @@ function wireUI() {
     downloadTextFile(exportParallelTEI(payload), "parallel_corpus.tei.xml", "application/xml;charset=utf-8");
   });
   if (els.variantMode) els.variantMode.addEventListener('change', () => { state.variantMode = els.variantMode.value; renderTable(); });
+  if (els.sortMode) els.sortMode.addEventListener('change', () => { state.sortMode = els.sortMode.value; renderTable(); });
   for (const cb of els.typeFilters || []) {
     cb.addEventListener('change', () => {
       if (cb.checked) state.variantFilters.add(cb.value); else state.variantFilters.delete(cb.value); renderTable();
@@ -262,7 +348,17 @@ function wireUI() {
     if (closeB) closeB.addEventListener('click', closeHelp);
     if (closeX) closeX.addEventListener('click', closeHelp);
   }
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeHelp(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeHelp(); closeContextAndScrollToRow(); } });
+
+  // 🔑 Модальное окно контекста
+  if (els.ctxClose) els.ctxClose.addEventListener('click', closeContextAndScrollToRow);
+  if (els.contextModal) {
+    els.contextModal.addEventListener('click', (e) => {
+      if (e.target === els.contextModal || e.target.classList.contains('modal__backdrop')) {
+        closeContextAndScrollToRow();
+      }
+    });
+  }
 }
 
 wireUI();
